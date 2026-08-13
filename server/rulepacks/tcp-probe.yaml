@@ -1,0 +1,35 @@
+rulepack: tcp-probe
+rules:
+  - id: open
+    when:
+      state: open
+    verdict:
+      severity: ok
+      title: "Port open"
+      detail: "TCP handshake completed — a service is listening and accepting connections."
+
+  - id: refused
+    when:
+      state: closed
+    verdict:
+      severity: info
+      title: "Port closed (connection refused)"
+      detail: >
+        The host is up and answered with RST — nothing is listening on this
+        port. This is a clean 'closed', not a firewall drop.
+      next_steps:
+        - "Confirm the service is running and bound to this port on the device"
+
+  - id: filtered
+    when:
+      state: filtered
+    verdict:
+      severity: warn
+      title: "Port filtered (SYN accepted, no completion / timeout)"
+      detail: >
+        No RST and no completed handshake — a firewall is silently dropping the
+        SYN, or the host is unreachable at L3. This is the SYN-accept-but-drop
+        signature that separates a firewall from a dead service.
+      next_steps:
+        - "Check firewall/ACL rules between this host and the target"
+        - "Ping the host to separate 'L3 unreachable' from 'port filtered'"

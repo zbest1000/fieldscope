@@ -1,0 +1,24 @@
+rulepack: dns
+rules:
+  - id: no-resolution
+    when:
+      resolved: false
+    verdict:
+      severity: error
+      title: "Name does not resolve"
+      detail: >
+        No A/AAAA/PTR records returned. The name is wrong, the resolver is
+        unreachable, or the record is missing. Anything that depends on this
+        hostname (historian URL, OPC UA endpoint, MQTT broker) will fail to
+        connect even when the device itself is healthy.
+      next_steps:
+        - "Try the literal IP to confirm the device is reachable independent of DNS"
+        - "Check the resolver and the zone for the missing record"
+
+  - id: resolved
+    when:
+      resolved: true
+    verdict:
+      severity: ok
+      title: "Name resolves"
+      detail: "DNS returned at least one address/PTR record."

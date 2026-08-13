@@ -1,0 +1,67 @@
+rulepack: tls
+rules:
+  - id: handshake-failed
+    when:
+      ok: false
+    verdict:
+      severity: error
+      title: "TLS handshake failed"
+      detail: >
+        Could not complete a TLS handshake on this port. The service may be
+        plaintext, down, or requiring a client certificate.
+      next_steps:
+        - "Confirm the endpoint actually speaks TLS on this port"
+
+  - id: expired
+    when:
+      ok: true
+      days_to_expiry: { lte: 0 }
+    verdict:
+      severity: error
+      title: "Certificate expired"
+      detail: >
+        The peer certificate is past its validity window. Clients that validate
+        will refuse the connection; OPC UA and MQTTS links break on this.
+      next_steps:
+        - "Renew/reissue the device certificate"
+
+  - id: expiring-soon
+    when:
+      ok: true
+      days_to_expiry: { gt: 0, lte: 30 }
+    verdict:
+      severity: warn
+      title: "Certificate expiring soon"
+      detail: "The certificate expires within 30 days — schedule a renewal before it breaks connections."
+
+  - id: self-signed
+    when:
+      ok: true
+      self_signed: true
+    verdict:
+      severity: info
+      title: "Self-signed certificate"
+      detail: >
+        The certificate is self-signed. Common and acceptable inside an OT
+        trust store, but validating clients must have it explicitly trusted.
+
+  - id: untrusted
+    when:
+      ok: true
+      authorized: false
+      self_signed: false
+    verdict:
+      severity: warn
+      title: "Certificate chain not trusted"
+      detail: >
+        The handshake succeeded but the chain did not validate against the
+        system trust store. Check for a missing intermediate CA.
+
+  - id: healthy
+    when:
+      ok: true
+      authorized: true
+    verdict:
+      severity: ok
+      title: "TLS healthy"
+      detail: "Handshake completed and the certificate chain validated."

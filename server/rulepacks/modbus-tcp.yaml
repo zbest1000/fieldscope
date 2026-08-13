@@ -1,0 +1,96 @@
+rulepack: modbus-tcp
+rules:
+  - id: gateway-answers-slave-dead
+    when:
+      transport.tcp_connect: success
+      response.exception_code: 0x0B          # gateway target failed to respond
+    verdict:
+      severity: error
+      title: "Gateway reachable, downstream slave not responding"
+      detail: >
+        TCP/502 accepts and a device is answering, but every request returns
+        exception 0x0B (Gateway Target Device Failed To Respond). A Modbus
+        gateway is replying; the addressed RTU slave behind it is offline,
+        mis-wired, or set to the wrong unit ID.
+      next_steps:
+        - "Verify unit/slave ID matches the RTU's configured address"
+        - "Check RS-485 A/B polarity and termination on the downstream segment"
+
+  - id: gateway-path-unavailable
+    when:
+      transport.tcp_connect: success
+      response.exception_code: 0x0A
+    verdict:
+      severity: error
+      title: "Gateway path unavailable"
+      detail: >
+        Exception 0x0A — the gateway has no route configured to the requested
+        unit ID. The gateway itself is healthy; its routing table is missing an
+        entry for this slave.
+      next_steps:
+        - "Check the gateway's Modbus routing/unit-mapping table"
+
+  - id: illegal-data-address
+    when:
+      transport.tcp_connect: success
+      response.exception_code: 0x02
+    verdict:
+      severity: warn
+      title: "Illegal data address"
+      detail: >
+        The device is alive and speaking Modbus but rejected the register
+        address (exception 0x02). The address is outside the device's map or
+        you're off by the 0-vs-1 base convention.
+      next_steps:
+        - "Confirm the register map and whether the device uses 0- or 1-based addressing"
+
+  - id: illegal-function
+    when:
+      transport.tcp_connect: success
+      response.exception_code: 0x01
+    verdict:
+      severity: warn
+      title: "Illegal function"
+      detail: >
+        Exception 0x01 — the device does not support this function code for this
+        object. Some devices expose holding registers but not coils, etc.
+
+  - id: silent-timeout
+    when:
+      transport.tcp_connect: success
+      response: none
+      timeout: true
+    verdict:
+      severity: warn
+      title: "Port open but no Modbus response"
+      detail: >
+        TCP handshake completes but no MBAP response arrives. Often a firewall
+        that accepts SYN but drops the payload, or a device that is listening
+        but its Modbus stack is hung.
+      next_steps:
+        - "Capture on the wire to confirm the request leaves and nothing returns"
+        - "Power-cycle the device's comms module if reachable"
+
+  - id: tcp-refused
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "TCP/502 not reachable"
+      detail: >
+        The Modbus TCP port did not accept a connection. The device is off, the
+        IP is wrong, or a firewall is blocking 502 outright.
+      next_steps:
+        - "Ping the host first to separate 'device down' from 'port blocked'"
+        - "Confirm IP/subnet and that 502 isn't firewalled"
+
+  - id: healthy
+    when:
+      response.function_code_echoed: true
+      response.exception_code: none
+    verdict:
+      severity: ok
+      title: "Modbus responding normally"
+      detail: >
+        Function code echoed with no exception — the slave is answering and the
+        register map is valid at the polled address.

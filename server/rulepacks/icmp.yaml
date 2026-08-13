@@ -1,0 +1,51 @@
+rulepack: icmp
+rules:
+  - id: unreachable
+    when:
+      reachable: false
+    verdict:
+      severity: error
+      title: "Host not answering ICMP"
+      detail: >
+        No echo replies. The host is powered off, disconnected, on a different
+        subnet, or blocking ICMP at a firewall. This is the top "the PLC is
+        offline" signature — confirm link/power before chasing the protocol.
+      next_steps:
+        - "Check physical link/power and switch port LEDs"
+        - "Confirm IP/subnet/gateway; some devices drop ICMP but still serve their protocol"
+
+  - id: high-loss
+    when:
+      reachable: true
+      loss_pct: { gte: 20 }
+    verdict:
+      severity: warn
+      title: "High packet loss"
+      detail: >
+        The host replies but drops a significant fraction of echoes. A flaky
+        cable, a duplex mismatch, or a saturated link. Intermittent protocol
+        errors on top of this are a symptom, not the root cause.
+      next_steps:
+        - "Check SNMP per-port error/discard/CRC counters on the switch"
+        - "Reseat/replace the cable; check for a 10/100 half-duplex mismatch"
+
+  - id: high-latency
+    when:
+      reachable: true
+      loss_pct: { lt: 20 }
+      rtt_avg: { gte: 100 }
+    verdict:
+      severity: warn
+      title: "Elevated round-trip time"
+      detail: >
+        Reachable but RTT is high for a LAN. Expect this over WAN/VPN; on a
+        local OT segment it points to congestion or an overloaded device stack.
+
+  - id: healthy
+    when:
+      reachable: true
+      loss_pct: { lt: 20 }
+    verdict:
+      severity: ok
+      title: "Host reachable"
+      detail: "ICMP echoes returning with acceptable loss and latency."
