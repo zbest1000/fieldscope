@@ -1,0 +1,96 @@
+# BACnet/IP rulepack (§5, §6.3). Who-Is/I-Am is the diagnostic entry point on a
+# building network; the device object's system-status carries the health story.
+
+rulepack: bacnet
+rules:
+  - id: no-iam
+    when:
+      transport.udp_response: none
+      timeout: true
+    verdict:
+      severity: error
+      title: "No I-Am — device silent or across a BBMD boundary"
+      detail: >
+        A unicast Who-Is drew no I-Am. Either nothing is listening on UDP 47808
+        at this address, or the device is on a different IP subnet and you are
+        not registered as a foreign device with its BBMD — broadcast Who-Is does
+        not cross an IP router without a BBMD relaying it.
+      next_steps:
+        - "Confirm the device IP and that UDP 47808 (0xBAC0) is open"
+        - "If the device is on another subnet, register as a foreign device with the BBMD or query via the local BBMD"
+        - "Check for a non-default UDP port (some sites run 47809+ per network)"
+
+  - id: no-response
+    when:
+      transport.udp_response: none
+    verdict:
+      severity: error
+      title: "No BACnet response"
+      detail: >
+        The Who-Is request produced no reply — see the raw transcript for the
+        transport error (host unreachable, port closed, or network down).
+
+  - id: non-operational
+    when:
+      transport.udp_response: success
+      iam.received: true
+      device.system_status: non-operational
+    verdict:
+      severity: error
+      title: "Device answering but reports NON-OPERATIONAL"
+      detail: >
+        The controller announces itself (I-Am) but its device object reports
+        system-status = non-operational. It is on the network yet not running
+        its application — commonly a failed program load, a hardware fault, or a
+        controller held in a stopped state.
+      next_steps:
+        - "Read the device object's status-flags and event-state for the fault detail"
+        - "Check whether the controller is in a stopped/commanded-off state at the panel"
+
+  - id: download-required
+    when:
+      transport.udp_response: success
+      iam.received: true
+      device.system_status: download-required
+    verdict:
+      severity: warn
+      title: "Device requires a program download"
+      detail: >
+        system-status = download-required: the controller is online but its
+        application database is missing or invalid and must be reloaded before
+        it will run its program.
+
+  - id: download-in-progress
+    when:
+      transport.udp_response: success
+      iam.received: true
+      device.system_status: download-in-progress
+    verdict:
+      severity: info
+      title: "Device download in progress"
+      detail: >
+        The controller is currently receiving a program download; transient
+        read failures during this window are expected.
+
+  - id: healthy
+    when:
+      transport.udp_response: success
+      iam.received: true
+      device.system_status: operational
+    verdict:
+      severity: ok
+      title: "BACnet device operational"
+      detail: >
+        The device answered Who-Is with an I-Am and its device object reports
+        system-status = operational.
+
+  - id: iam-only
+    when:
+      transport.udp_response: success
+      iam.received: true
+    verdict:
+      severity: info
+      title: "I-Am received"
+      detail: >
+        The device announced itself; its system-status was not readable (some
+        devices restrict the device object), so run-state health is unknown.

@@ -12,8 +12,9 @@ import * as modbus from './modbus.js';
 import * as ethernetIp from './ethernet-ip.js';
 import * as mqtt from './mqtt.js';
 import * as snmpDriver from './snmp.js';
+import * as bacnet from './bacnet.js';
 
-const MODULES = [icmp, tcpudp, dns, tls, snmpDriver, modbus, ethernetIp, mqtt];
+const MODULES = [icmp, tcpudp, dns, tls, snmpDriver, modbus, ethernetIp, bacnet, mqtt];
 
 export class DriverRegistry {
   constructor() {

@@ -27,7 +27,7 @@ dependency-light implementations that run and are tested here.
 | **Commissioning report export** (self-contained HTML, findings-first, credential redaction, §12.8) | ✅ `server/src/report` |
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
-| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **MQTT** (topic tree + gated publish) |
+| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **BACnet/IP** (Who-Is/I-Am + system-status) · **MQTT** (topic tree + gated publish) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
@@ -55,6 +55,8 @@ The `simlab` container serves, at hostname `simlab` from inside the stack:
 | MQTT | 1883 | open broker |
 | MQTT | 1884 | auth-required broker (`ops`/`secret` — exercise the CONNACK verdicts) |
 | SNMP | 1161/udp | managed switch, community `public`, error counters climbing on `eth1` |
+| BACnet/IP | 47808/udp | operational controller (device `260001`, Automated Logic) |
+| BACnet/IP | 47809/udp | controller reporting system-status non-operational (device `260002`) |
 
 Evidence persists in the `fieldscope-data` volume across restarts. The image
 runs unprivileged; TCP/UDP drivers are fully functional in-container, while raw
@@ -99,14 +101,15 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 31 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 37 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 
 Each protocol tests against a live local simulator — a Modbus slave, an
-EtherNet/IP identity endpoint, an MQTT broker (aedes), and an SNMP agent — so
-fault verdicts (gateway-dead, major-fault, not-authorized, flaky-cable) are
-exercised on real sockets with no hardware or network. The same simulators
+EtherNet/IP identity endpoint, an MQTT broker (aedes), an SNMP agent, and a
+BACnet/IP controller — so fault verdicts (gateway-dead, major-fault,
+not-authorized, flaky-cable, non-operational) are exercised on real sockets
+with no hardware or network. The same simulators
 power the compose `lab` profile via `server/test/sim-lab.js`. CI runs the
 suite, builds the client, builds the Docker image, and smoke-tests the
 container on every push.
@@ -119,7 +122,7 @@ The full design spec is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Section 
 - **§4 Driver contract** → `contract/contract.js` (manifest normalize, `makeArtifact`, verbs).
 - **§4.1 Write double-gate** → `orchestrator/orchestrator.js` (`arm` / `prepareWrite` / `confirmWrite`) + `client/.../TopBar.jsx`, `WritePanel`.
 - **§5 Diagnose rules** → `rules/engine.js` + `server/rulepacks/*.yaml`.
-- **§6.1 / 6.2 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write).
+- **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write).
 - **§7 UI structure** → `client/src/components/*` (one repeated workspace, capability-driven tabs, Diagnose/Monitor/Raw).
 - **§7 Evidence & reporting / §12.8** → `report/report.js` (findings-first HTML commissioning report with credential redaction, exported per session from the Evidence view).
 - **§9 Evidence data model** → `evidence/store.js` (Target / Session / Artifact / Verdict / Audit; replay + diff).

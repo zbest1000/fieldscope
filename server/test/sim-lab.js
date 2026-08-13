@@ -10,11 +10,13 @@
 //   ethernet-ip  :44818  operational PLC   |  :44819 major-unrecoverable fault
 //   mqtt         :1883   open broker       |  :1884  auth-required broker
 //   snmp         :1161/udp  switch with a flaky cable on eth1 (community: public)
+//   bacnet       :47808/udp operational controller | :47809 non-operational
 
 import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
 import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
+import { startBacnetSim } from './bacnet-sim.js';
 
 const services = [];
 
@@ -45,6 +47,10 @@ await up('snmp flaky-cable', ':1161/udp (community "public", errors on eth1)', (
       [3, 'eth2 spare', 100_000_000, 2, 2, 0, 0, 0, 0],
     ],
   }));
+await up('bacnet operational', ':47808/udp (device 260001, Automated Logic)', () =>
+  startBacnetSim({ port: 47808, deviceInstance: 260001, vendorId: 36, systemStatus: 'operational' }));
+await up('bacnet non-operational', ':47809/udp (device 260002, non-operational)', () =>
+  startBacnetSim({ port: 47809, deviceInstance: 260002, vendorId: 5, systemStatus: 'non-operational' }));
 
 console.log(`[sim-lab] ${services.length} simulators up — Ctrl-C to stop`);
 

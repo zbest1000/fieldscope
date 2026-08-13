@@ -16,6 +16,7 @@ import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
 import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
+import { startBacnetSim } from './bacnet-sim.js';
 
 let passed = 0;
 let failed = 0;
@@ -327,6 +328,54 @@ async function main() {
     assert.match(art.verdicts[0].title, /community/);
   });
   snmpSim.close();
+
+  // ---- BACnet/IP driver against the simulator ----
+  console.log('bacnet driver (against simulator)');
+  const bacSim = await startBacnetSim({ deviceInstance: 260001, vendorId: 36, systemStatus: 'operational' });
+  await test('identify decodes I-Am (device instance, vendor, segmentation)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.device_instance, 260001);
+    assert.strictEqual(art.result.vendor, 'Automated Logic (ALC)');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('read system-status returns operational', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { property: 'system-status' });
+    assert.strictEqual(art.result.value, 'operational');
+  });
+  await test('read vendor-name returns the character string', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { property: 'vendor-name' });
+    assert.strictEqual(art.result.value, 'Automated Logic');
+  });
+  await test('operational device diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('non-operational device produces the error verdict', async () => {
+    const badSim = await startBacnetSim({ deviceInstance: 260002, vendorId: 5, systemStatus: 'non-operational' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'non-operational');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.close();
+  });
+  await test('silent address produces the no-iam BBMD verdict', async () => {
+    const { orchestrator } = makeStack();
+    // Bind a socket and immediately close so the port is almost certainly dead.
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: 47999 });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-iam');
+    assert.match(art.verdicts[0].title, /BBMD/);
+  });
+  bacSim.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');
