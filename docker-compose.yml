@@ -1,0 +1,31 @@
+# Fieldscope compose stack.
+#
+#   docker compose up --build              → just the workbench on :5100
+#   docker compose --profile lab up --build → workbench + simulated plant floor
+#
+# The lab profile starts a second container from the same image running every
+# protocol simulator (see server/test/sim-lab.js). In the UI, use host `simlab`
+# with these ports:
+#   modbus-tcp 5020 (healthy) / 5021 (gateway, dead RTU) · ethernet-ip 44818
+#   (operational) / 44819 (faulted) · mqtt 1883 (open) / 1884 (auth: ops/secret)
+#   · snmp 1161 (community "public", flaky cable on eth1)
+
+services:
+  fieldscope:
+    build: .
+    image: fieldscope:latest
+    ports:
+      - "5100:5100"
+    volumes:
+      - fieldscope-data:/data
+    restart: unless-stopped
+
+  simlab:
+    profiles: ["lab"]
+    build: .
+    image: fieldscope:latest
+    command: ["node", "server/test/sim-lab.js"]
+    restart: unless-stopped
+
+volumes:
+  fieldscope-data:

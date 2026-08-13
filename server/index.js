@@ -13,6 +13,7 @@ import { DriverRegistry } from './src/drivers/index.js';
 import { EvidenceStore } from './src/evidence/store.js';
 import { RulesEngine } from './src/rules/engine.js';
 import { Orchestrator } from './src/orchestrator/orchestrator.js';
+import { renderSessionReport } from './src/report/report.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5100;
@@ -25,6 +26,18 @@ const rules = new RulesEngine({ dir: path.join(__dirname, 'rulepacks') });
 
 const app = express();
 app.use(express.json());
+
+// Minimal request log for API calls — enough to follow a session from the
+// container logs without a logging framework.
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) return next();
+  const started = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    console.log(`[api] ${req.method} ${req.path} ${res.statusCode} ${ms.toFixed(1)}ms`);
+  });
+  next();
+});
 
 const server = http.createServer(app);
 const io = new SocketServer(server, { cors: { origin: '*' } });
@@ -47,7 +60,15 @@ const wrap = (fn) => async (req, res) => {
 };
 
 // ---- meta ------------------------------------------------------------------
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'fieldscope', version: '0.1.0' }));
+app.get('/api/health', (_req, res) =>
+  res.json({
+    ok: true,
+    service: 'fieldscope',
+    version: '0.2.0',
+    uptime_s: Math.round(process.uptime()),
+    drivers: registry.list().length,
+    rulepacks: rules.listPacks().length,
+  }));
 
 app.get('/api/drivers', (_req, res) => res.json({ drivers: registry.list(), grouped: registry.grouped() }));
 app.get('/api/drivers/:id', (req, res) => {
@@ -113,6 +134,22 @@ app.get('/api/diff', (req, res) => {
 });
 app.get('/api/audit', (_req, res) => res.json({ entries: store.listAudit() }));
 
+// ---- reports (§12 phase 8) -------------------------------------------------
+// A self-contained, print-friendly HTML commissioning report for one session:
+// findings first, then the artifact timeline and the write/ARM audit trail.
+// Credentials are redacted server-side before anything leaves the store.
+app.get('/api/sessions/:id/report', (req, res) => {
+  const session = store.getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'unknown session' });
+  const html = renderSessionReport({
+    session,
+    artifacts: store.listArtifacts(req.params.id),
+    audit: store.listAudit(),
+  });
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(html);
+});
+
 // ---- static client (production) --------------------------------------------
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(clientDist)) {
@@ -128,5 +165,25 @@ server.listen(PORT, () => {
   console.log(`[fieldscope] drivers: ${registry.list().map((d) => d.id).join(', ')}`);
   console.log(`[fieldscope] rulepacks: ${rules.listPacks().map((p) => p.rulepack).join(', ')}`);
 });
+
+// Graceful shutdown: stop monitors, flush SQLite, close sockets. Docker sends
+// SIGTERM on `docker stop`; without this the WAL can be left mid-checkpoint.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[fieldscope] ${signal} — shutting down`);
+  for (const [id] of orchestrator.monitors) orchestrator.stopMonitor(id);
+  io.close();
+  server.closeIdleConnections?.(); // don't let a parked keep-alive hold the exit
+  server.close(() => {
+    try { store.close(); } catch { /* already closed */ }
+    process.exit(0);
+  });
+  // Hard exit if a socket refuses to drain.
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 export { app, orchestrator, registry, store, rules };

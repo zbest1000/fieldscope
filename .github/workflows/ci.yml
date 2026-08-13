@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Backend tests + client build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+
+      - name: Install server dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Run backend test suite (drivers vs simulators)
+        working-directory: server
+        run: npm test
+
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build client
+        working-directory: client
+        run: npm run build
+
+  docker:
+    name: Docker image build + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t fieldscope:ci .
+
+      - name: Smoke test — container serves API and client
+        run: |
+          docker run -d --name fieldscope -p 5100:5100 fieldscope:ci
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5100/api/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:5100/api/health | tee /dev/stderr | grep -q '"ok":true'
+          curl -sf http://localhost:5100/api/drivers | grep -q 'modbus-tcp'
+          curl -sf -o /dev/null -w '%{http_code}' http://localhost:5100/ | grep -q 200
+
+      - name: Smoke test — sim lab runs from the same image
+        run: |
+          docker run -d --name simlab fieldscope:ci node server/test/sim-lab.js
+          sleep 3
+          docker logs simlab | grep -q '7 simulators up'
+
+      - name: Container logs on failure
+        if: failure()
+        run: |
+          docker logs fieldscope || true
+          docker logs simlab || true

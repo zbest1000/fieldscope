@@ -1,0 +1,124 @@
+# EtherNet/IP + CIP rulepack (§5, §6.2). The Identity object's status word and
+# state byte carry the diagnostic story: ownership, configuration, and the
+# minor/major fault bits that map straight to "why is this drive faulted".
+
+rulepack: ethernet-ip
+rules:
+  - id: port-closed
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "No EtherNet/IP endpoint at this address"
+      detail: >
+        TCP 44818 refused or unreachable. Either the device is offline, the
+        address is wrong, or a firewall between you and it drops the port.
+      next_steps:
+        - "Ping the address to separate network reachability from service state"
+        - "Confirm the device actually speaks EtherNet/IP (not Modbus/S7/etc.)"
+
+  - id: silent-timeout
+    when:
+      transport.tcp_connect: success
+      identity.received: false
+      timeout: true
+    verdict:
+      severity: warn
+      title: "Port open but no encapsulation response"
+      detail: >
+        TCP 44818 accepts but ListIdentity gets no reply. Often a middlebox that
+        accepts the SYN and drops payload, or a non-CIP service squatting on the
+        port.
+
+  - id: not-cip
+    when:
+      transport.tcp_connect: success
+      identity.received: false
+    verdict:
+      severity: warn
+      title: "Endpoint answered but returned no Identity item"
+      detail: >
+        Something responded on the encapsulation port but did not return a CIP
+        Identity object. Check the encapsulation status code in the decode —
+        an 'unsupported command' points at a partial or non-conformant stack.
+
+  - id: major-unrecoverable-fault
+    when:
+      identity.received: true
+      identity.major_unrecoverable_fault: true
+    verdict:
+      severity: error
+      title: "Device reports a MAJOR UNRECOVERABLE fault"
+      detail: >
+        The Identity status word has the major-unrecoverable bit set. The device
+        firmware considers itself broken beyond self-recovery — typically a
+        hardware failure or corrupted firmware image.
+      next_steps:
+        - "Power-cycle the device and re-run Identify"
+        - "Check the vendor's extended status code table for the extended_status nibble"
+        - "If the fault persists, the module likely needs replacement or reflash"
+
+  - id: major-recoverable-fault
+    when:
+      identity.received: true
+      identity.major_recoverable_fault: true
+    verdict:
+      severity: error
+      title: "Device reports a major recoverable fault"
+      detail: >
+        The device declares a major fault it believes is recoverable — commonly a
+        configuration fault, missing I/O connection, or an aborted firmware
+        update. It will not run until the fault is cleared.
+      next_steps:
+        - "Read the fault code from the vendor's programming software"
+        - "Verify the stored configuration matches the installed hardware"
+
+  - id: standby-unowned
+    when:
+      identity.received: true
+      identity.state: 2
+      identity.owned: false
+    verdict:
+      severity: warn
+      title: "Device is in Standby and unowned"
+      detail: >
+        The device answers Identity but sits in Standby with no owning
+        connection. For an I/O adapter this usually means the scanner/PLC has
+        not opened its connection — check the scanner's I/O tree and the
+        electronic keying (vendor/type/revision must match the configuration).
+      next_steps:
+        - "Verify the PLC/scanner has this device in its I/O configuration"
+        - "Compare configured vendor/product/revision against the identity read here (keying mismatch)"
+
+  - id: minor-fault
+    when:
+      identity.received: true
+      identity.minor_fault: true
+    verdict:
+      severity: warn
+      title: "Device reports a minor fault"
+      detail: >
+        A minor fault bit is set in the status word — the device still runs, but
+        something is degraded (e.g. a battery, a redundant supply, a diagnostic
+        threshold).
+
+  - id: healthy
+    when:
+      identity.received: true
+      identity.state: 3
+    verdict:
+      severity: ok
+      title: "EtherNet/IP device operational"
+      detail: >
+        Identity object received; the device reports the Operational state with
+        no fault bits set.
+
+  - id: identity-ok
+    when:
+      identity.received: true
+    verdict:
+      severity: info
+      title: "Identity received"
+      detail: >
+        The device answered ListIdentity; see the decoded state and status bits
+        for its exact condition.

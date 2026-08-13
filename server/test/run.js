@@ -13,6 +13,9 @@ import { EvidenceStore } from '../src/evidence/store.js';
 import { RulesEngine } from '../src/rules/engine.js';
 import { Orchestrator } from '../src/orchestrator/orchestrator.js';
 import { startModbusSim } from './modbus-sim.js';
+import { startEipSim } from './eip-sim.js';
+import { startMqttBroker } from './mqtt-broker.js';
+import { startSnmpAgent } from './snmp-agent.js';
 
 let passed = 0;
 let failed = 0;
@@ -195,6 +198,160 @@ async function main() {
     const ses = orchestrator.openSession({ driverId: 'tcp-probe', host: '127.0.0.1', port: 1 });
     const art = await orchestrator.diagnose(ses.id, { timeout: 800 });
     assert.ok(['refused', 'filtered'].includes(art.verdicts[0].rule_id));
+  });
+
+  // ---- EtherNet/IP driver against the simulator ----
+  console.log('ethernet-ip driver (against simulator)');
+  const eipSim = await startEipSim({});
+  await test('identify decodes the CIP Identity object', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.product_name, 'Fieldscope Sim PLC');
+    assert.strictEqual(art.result.vendor, 'Rockwell Automation / Allen-Bradley');
+    assert.strictEqual(art.result.state, 'Operational');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('connect registers an encapsulation session', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', {});
+    assert.strictEqual(art.result.registered, true);
+    assert.ok(art.result.session_handle);
+  });
+  await test('operational device diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('major-unrecoverable status bit produces the fault verdict', async () => {
+    const faultSim = await startEipSim({ status: 0x0800, state: 5 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: faultSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'major-unrecoverable-fault');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    faultSim.server.close();
+  });
+  await test('standby + unowned produces the keying/config verdict', async () => {
+    const standbySim = await startEipSim({ status: 0x0000, state: 2 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: standbySim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'standby-unowned');
+    standbySim.server.close();
+  });
+  eipSim.server.close();
+
+  // ---- MQTT driver against a live broker ----
+  console.log('mqtt driver (against broker)');
+  const broker = await startMqttBroker({});
+  await test('open broker diagnoses healthy (CONNACK rc=0)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('auth-required broker produces the not-authorized verdict', async () => {
+    const authBroker = await startMqttBroker({ username: 'ops', password: 'secret' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: authBroker.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'not-authorized');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    await authBroker.close();
+  });
+  await test('publish goes through the double-gate and read-back verifies retained', async () => {
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const params = { topic: 'fieldscope/test/x', payload: 'hello-42', qos: '1', retain: 'retained' };
+    const prep = await orchestrator.prepareWrite(ses.id, params);
+    assert.strictEqual(prep.point, 'fieldscope/test/x');
+    assert.strictEqual(prep.proposed_value, 'hello-42');
+    await assert.rejects(() => orchestrator.confirmWrite(ses.id, prep.token), /not ARMED/);
+    orchestrator.arm(ses.id, 'ARM');
+    const prep2 = await orchestrator.prepareWrite(ses.id, params);
+    const art = await orchestrator.confirmWrite(ses.id, prep2.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, 'hello-42');
+    assert.strictEqual(art.result.verified, true);
+    assert.ok(store.listAudit().some((a) => a.action === 'mqtt-publish'));
+  });
+  await test('browse samples the topic tree and sees the retained topic', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { filter: '#', window_ms: 700 });
+    const points = art.result.tree[0].points;
+    const hit = points.find((p) => p.ref === 'fieldscope/test/x');
+    assert.ok(hit, 'expected the retained topic in the tree');
+    assert.strictEqual(hit.value, 'hello-42');
+  });
+  await broker.close();
+
+  // ---- SNMP driver against a live agent ----
+  console.log('snmp driver (against agent)');
+  const snmpSim = await startSnmpAgent({
+    interfaces: [
+      [1, 'eth0 uplink', 1_000_000_000, 1, 1, 0, 0, 0, 0],
+      [2, 'eth1 plc', 100_000_000, 1, 1, 3, 917, 0, 12],
+    ],
+  });
+  await test('identify reads the system group', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { community: 'public' });
+    assert.strictEqual(art.result.name, 'fieldscope-sim-switch');
+    assert.ok(art.result.uptime_days > 0);
+  });
+  await test('interface error counters produce the flaky-cable verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'public' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'flaky-cable');
+    assert.match(art.result.facts.interfaces.worst, /eth1 plc/);
+  });
+  await test('clean counters diagnose healthy', async () => {
+    const cleanSim = await startSnmpAgent({});
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: cleanSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'public' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    cleanSim.close();
+  });
+  await test('wrong community string produces the no-response verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'wrong', timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-response');
+    assert.match(art.verdicts[0].title, /community/);
+  });
+  snmpSim.close();
+
+  // ---- commissioning report (§12 phase 8) ----
+  console.log('commissioning report');
+  await test('report renders findings, timeline, and audit with redaction', async () => {
+    const { renderSessionReport, redact } = await import('../src/report/report.js');
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    await orchestrator.diagnose(ses.id);
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 3, value: 77 });
+    await orchestrator.confirmWrite(ses.id, prep.token);
+    const html = renderSessionReport({
+      session: store.getSession(ses.id),
+      artifacts: store.listArtifacts(ses.id),
+      audit: store.listAudit(),
+    });
+    assert.match(html, /Fieldscope commissioning report/);
+    assert.match(html, /Modbus responding normally/); // verdict made it in
+    assert.match(html, /modbus-write/); // audit trail made it in
+    // credential redaction
+    const red = redact({ params: { community: 'private', password: 'hunter2', address: 3 } });
+    assert.strictEqual(red.params.community, '•••redacted•••');
+    assert.strictEqual(red.params.password, '•••redacted•••');
+    assert.strictEqual(red.params.address, 3);
+    assert.ok(!html.includes('hunter2'));
   });
 
   sim.server.close();

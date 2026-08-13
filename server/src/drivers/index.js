@@ -9,8 +9,11 @@ import * as tcpudp from './tcpudp.js';
 import * as dns from './dns.js';
 import * as tls from './tls.js';
 import * as modbus from './modbus.js';
+import * as ethernetIp from './ethernet-ip.js';
+import * as mqtt from './mqtt.js';
+import * as snmpDriver from './snmp.js';
 
-const MODULES = [icmp, tcpudp, dns, tls, modbus];
+const MODULES = [icmp, tcpudp, dns, tls, snmpDriver, modbus, ethernetIp, mqtt];
 
 export class DriverRegistry {
   constructor() {

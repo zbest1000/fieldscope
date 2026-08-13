@@ -174,12 +174,16 @@ export class Orchestrator {
 
     const token = crypto.randomBytes(8).toString('hex');
     rt.pendingWrites.set(token, { params, currentValue, created: nowMs() });
+    // Point/value naming is driver-shaped: a register write has area:address and
+    // a value; a broker publish has a topic and a payload.
+    const point =
+      params.point ?? params.topic ?? `${params.area ?? 'holding'}:${params.address ?? 0}`;
     return {
       token,
       target: rt.port ? `${rt.host}:${rt.port}` : rt.host,
-      point: `${params.area ?? 'holding'}:${params.address ?? 0}`,
+      point,
       current_value: currentValue,
-      proposed_value: params.value,
+      proposed_value: params.value ?? params.payload,
       requires_arm: true,
       armed: rt.armed,
     };

@@ -66,7 +66,19 @@ export default function Evidence() {
         {diffRows ? (
           <DiffView rows={diffRows} />
         ) : selected ? (
-          <Timeline artifacts={artifacts} />
+          <div>
+            <div className="flex items-center mb-3">
+              <a
+                href={`/api/sessions/${selected.id}/report`}
+                target="_blank"
+                rel="noreferrer"
+                className="ml-auto text-xs px-3 py-1.5 rounded border border-edge bg-panel2 text-slate-200 hover:bg-panel"
+              >
+                Export commissioning report ↗
+              </a>
+            </div>
+            <Timeline artifacts={artifacts} />
+          </div>
         ) : (
           <AuditView audit={audit} />
         )}
