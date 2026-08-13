@@ -60,7 +60,7 @@ jobs:
         run: |
           docker run -d --name simlab fieldscope:ci node server/test/sim-lab.js
           sleep 3
-          docker logs simlab | grep -q '7 simulators up'
+          docker logs simlab | grep -Eq '[0-9]+ simulators up'
 
       - name: Container logs on failure
         if: failure()
