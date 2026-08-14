@@ -16,8 +16,9 @@ import * as bacnet from './bacnet.js';
 import * as dnp3 from './dnp3.js';
 import * as s7comm from './s7comm.js';
 import * as sparkplug from './sparkplug.js';
+import * as opcua from './opcua.js';
 
-const MODULES = [icmp, tcpudp, dns, tls, snmpDriver, modbus, ethernetIp, s7comm, bacnet, dnp3, mqtt, sparkplug];
+const MODULES = [icmp, tcpudp, dns, tls, snmpDriver, modbus, ethernetIp, s7comm, bacnet, dnp3, mqtt, sparkplug, opcua];
 
 export class DriverRegistry {
   constructor() {

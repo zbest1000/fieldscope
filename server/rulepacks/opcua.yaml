@@ -1,0 +1,74 @@
+# OPC UA rulepack (§5, §6.4). Keyed off the UACP Hello/Acknowledge handshake:
+# is there a real OPC UA binary server here, and did it accept the endpoint URL.
+
+rulepack: opcua
+rules:
+  - id: port-closed
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "No OPC UA endpoint (opc.tcp port closed)"
+      detail: >
+        TCP to the OPC UA port failed. The server is down, the port is wrong
+        (4840 is the default but many servers use 48010, 49320, 62541, …), or a
+        firewall blocks it.
+      next_steps:
+        - "Confirm the server's opc.tcp port (it is often not 4840)"
+        - "Ping the host to separate reachability from the OPC UA service"
+
+  - id: endpoint-url-invalid
+    when:
+      transport.tcp_connect: success
+      uacp.error: "Bad_TcpEndpointUrlInvalid — the server rejected the endpoint URL"
+    verdict:
+      severity: error
+      title: "Server rejected the endpoint URL"
+      detail: >
+        The OPC UA server answered the Hello with Bad_TcpEndpointUrlInvalid. The
+        binary transport is alive but the server does not recognize the
+        opc.tcp:// endpoint URL sent to it. This commonly happens behind NAT or a
+        reverse proxy, where the URL the client uses differs from the hostname
+        the server advertises and validates.
+      next_steps:
+        - "Use the exact endpoint URL from the server's GetEndpoints / discovery"
+        - "If NATed, configure the server's advertised hostname or an alternate endpoint URL"
+
+  - id: handshake-error
+    when:
+      transport.tcp_connect: success
+      uacp.type: ERR
+    verdict:
+      severity: warn
+      title: "OPC UA server returned a UACP error"
+      detail: >
+        The server responded to the Hello with a UACP Error message rather than
+        an Acknowledge. See the decoded StatusCode for the specific reason
+        (protocol version, message size, or resource limits).
+
+  - id: not-opcua
+    when:
+      transport.tcp_connect: success
+      uacp.ack: false
+    verdict:
+      severity: warn
+      title: "Port open but no OPC UA Acknowledge"
+      detail: >
+        The TCP port accepts but no UACP Acknowledge came back. Either the port
+        is not an OPC UA binary endpoint (it may be HTTPS/JSON transport, or an
+        unrelated service), or the server dropped the Hello.
+      next_steps:
+        - "Confirm this is the opc.tcp (binary) endpoint, not the HTTPS one"
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      uacp.ack: true
+    verdict:
+      severity: ok
+      title: "OPC UA endpoint responding"
+      detail: >
+        The server completed the UACP Hello/Acknowledge handshake and negotiated
+        buffer and message limits. The binary transport is healthy; identify to
+        see the negotiated limits. (Endpoint security-policy and certificate
+        audit run over the secure channel — the next layer above this handshake.)

@@ -20,6 +20,7 @@ import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
+import { startOpcuaSim } from './opcua-sim.js';
 
 let passed = 0;
 let failed = 0;
@@ -532,6 +533,41 @@ async function main() {
     assert.ok(points.some((pt) => pt.ref === 'PlantD/N4'));
   });
   await spBroker.close();
+
+  // ---- OPC UA driver against the simulator ----
+  console.log('opcua driver (against simulator)');
+  const uaSim = await startOpcuaSim({});
+  await test('connect completes the UACP Hello/Ack handshake', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', {});
+    assert.strictEqual(art.result.handshake, 'acknowledged');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('identify surfaces the negotiated transport limits', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.acknowledged, true);
+    assert.strictEqual(art.result.receive_buffer, 65536);
+    assert.strictEqual(art.result.max_chunk_count, 64);
+  });
+  await test('acknowledged handshake diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('rejected endpoint URL produces the endpoint-url-invalid verdict', async () => {
+    const badSim = await startOpcuaSim({ rejectEndpoint: true, errorCode: 0x80830000 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id, { endpoint_url: 'opc.tcp://wrong-host/UA' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'endpoint-url-invalid');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.server.close();
+  });
+  uaSim.server.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');

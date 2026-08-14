@@ -12,6 +12,7 @@
 #   (operational) / 47809 (non-operational) · dnp3 20000 (clean) / 20001
 #   (device-restart IIN) · s7comm 1102 (S7-300, rack 0/slot 2) · sparkplug edge
 #   node publishing to the mqtt 1883 broker (diagnose the `sparkplug` driver there)
+#   · opcua 4840 (UACP Hello/Ack handshake)
 
 services:
   fieldscope:

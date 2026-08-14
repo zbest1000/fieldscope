@@ -15,6 +15,7 @@
 //   s7comm       :1102   S7-300 @ rack0/slot2 (refuses wrong rack/slot)
 //   sparkplug          a Sparkplug B edge node publishing to the :1883 broker
 //                      (group Plant1 / node Line3; use the mqtt :1883 target)
+//   opcua        :4840   OPC UA server (UACP Hello/Ack handshake)
 
 import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
@@ -24,6 +25,7 @@ import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
+import { startOpcuaSim } from './opcua-sim.js';
 
 const services = [];
 
@@ -68,6 +70,7 @@ await up('sparkplug edge node', '→ mqtt :1883 (Plant1/Line3, periodic rebirth)
   const node = startSparkplugNode({ brokerPort: 1883, group: 'Plant1', node: 'Line3', intervalMs: 200, rebirthEvery: 20 });
   return { close: () => node.stop() };
 });
+await up('opcua server', ':4840   (UACP Hello/Ack handshake)', () => startOpcuaSim({ port: 4840 }));
 
 console.log(`[sim-lab] ${services.length} simulators up — Ctrl-C to stop`);
 
