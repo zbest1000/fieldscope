@@ -22,8 +22,8 @@ export default function Home({ setView }) {
       <p className="text-sm text-slate-400 max-w-2xl mb-6">
         A read-only, evidence-first diagnostics workbench. Every probe, poll, and browse is captured
         as an artifact with raw bytes, a decode, and a verdict — then replayed, diffed, and exported.
-        This build ships the IT tier plus Modbus TCP; the driver contract is the same for every
-        protocol added next.
+        One workbench spanning IT, industrial, utility, and IIoT protocols behind a single driver
+        contract; writes are double-gated and every action is audited.
       </p>
 
       <div className="grid grid-cols-3 gap-3 mb-8 max-w-2xl">

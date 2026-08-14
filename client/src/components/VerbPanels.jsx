@@ -3,6 +3,15 @@ import { useStore } from '../store.js';
 import { api } from '../api.js';
 import { Verdict, HexView, Json, Field, Btn } from './ui.jsx';
 
+// Seed the manifest-declared defaults so unedited fields are still submitted —
+// otherwise an immediate run/preview sends `undefined` for values the form only
+// *displays* as a placeholder default.
+function defaultsFor(spec) {
+  const out = {};
+  if (spec) for (const [k, def] of Object.entries(spec)) if (def.default !== undefined) out[k] = def.default;
+  return out;
+}
+
 // Renders manifest-declared params (§4) as a small form. Every workspace uses
 // this one runner, so a new driver's verbs get a UI for free.
 function ParamForm({ spec, value, onChange }) {
@@ -44,9 +53,11 @@ function ParamForm({ spec, value, onChange }) {
 // Generic verb panel: connect / identify / browse / read.
 export function GenericVerb({ driver, verb }) {
   const { session, runVerb, flash } = useStore();
-  const [params, setParams] = useState({});
+  const spec = driver.params?.[verb];
+  const [params, setParams] = useState(() => defaultsFor(spec));
   const [artifact, setArtifact] = useState(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => setParams(defaultsFor(spec)), [driver.id, verb]); // reset on switch
 
   async function run() {
     setBusy(true);
@@ -62,7 +73,7 @@ export function GenericVerb({ driver, verb }) {
 
   return (
     <div>
-      <ParamForm spec={driver.params?.[verb]} value={params} onChange={setParams} />
+      <ParamForm spec={spec} value={params} onChange={setParams} />
       <Btn variant="primary" onClick={run} disabled={!session || busy}>
         {busy ? 'Running…' : `Run ${verb}`}
       </Btn>
@@ -153,8 +164,9 @@ export function DiagnosePanel() {
 // Monitor panel (§7): jitter / min/avg/max RTT / loss + a rolling sparkline.
 export function MonitorPanel({ driver }) {
   const { session, monitor, flash } = useStore();
-  const [params, setParams] = useState({});
+  const [params, setParams] = useState(() => defaultsFor(driver.params?.monitor));
   const [monitorId, setMonitorId] = useState(null);
+  useEffect(() => setParams(defaultsFor(driver.params?.monitor)), [driver.id]);
 
   async function start() {
     try {
@@ -241,9 +253,10 @@ function Sparkline({ series }) {
 // then confirm — which the backend only accepts if the session is ARMED.
 export function WritePanel({ driver }) {
   const { session, armed, flash } = useStore();
-  const [params, setParams] = useState({});
+  const [params, setParams] = useState(() => defaultsFor(driver.params?.write));
   const [prep, setPrep] = useState(null);
   const [result, setResult] = useState(null);
+  useEffect(() => setParams(defaultsFor(driver.params?.write)), [driver.id]);
 
   async function prepare() {
     setResult(null);
