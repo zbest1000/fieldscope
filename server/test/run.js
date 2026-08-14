@@ -17,6 +17,7 @@ import { startEipSim } from './eip-sim.js';
 import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
+import { startDnp3Sim } from './dnp3-sim.js';
 
 let passed = 0;
 let failed = 0;
@@ -376,6 +377,67 @@ async function main() {
     assert.match(art.verdicts[0].title, /BBMD/);
   });
   bacSim.close();
+
+  // ---- DNP3 driver against the simulator ----
+  console.log('dnp3 driver (against simulator)');
+  await test('DNP3 CRC matches the opendnp3 reference algorithm', async () => {
+    const { dnp3Crc } = await import('../src/drivers/dnp3.js');
+    // Independent table-based reference (poly 0xA6BC, final complement).
+    const table = [];
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = c & 1 ? (c >>> 1) ^ 0xa6bc : c >>> 1;
+      table[i] = c & 0xffff;
+    }
+    const ref = (buf) => {
+      let c = 0;
+      for (const b of buf) c = (table[(c ^ b) & 0xff] ^ (c >>> 8)) & 0xffff;
+      return (~c) & 0xffff;
+    };
+    for (const v of [Buffer.from([0x05, 0x64, 0x05, 0xc9, 0x01, 0x00, 0x00, 0x04]), Buffer.from('0123456789')]) {
+      assert.strictEqual(dnp3Crc(v), ref(v));
+    }
+  });
+  const dnpSim = await startDnp3Sim({ outstation: 1024, iin1: 0x00, iin2: 0x00 });
+  await test('connect confirms the DNP3 link status', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.link_confirmed, true);
+    assert.strictEqual(art.result.outstation_address, 1024);
+    assert.strictEqual(art.result.crc_ok, true);
+  });
+  await test('identify decodes the IIN word', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.iin_raw, '0x0000');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('clean IIN diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1024 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('device-restart IIN bit produces the restart verdict', async () => {
+    const restartSim = await startDnp3Sim({ outstation: 1025, iin1: 0x80, iin2: 0x00 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: restartSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1025 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'device-restart');
+    restartSim.server.close();
+  });
+  await test('config-corrupt IIN2 bit produces the error verdict', async () => {
+    const badSim = await startDnp3Sim({ outstation: 1026, iin1: 0x00, iin2: 0x20 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1026 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'config-corrupt');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.server.close();
+  });
+  dnpSim.server.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');

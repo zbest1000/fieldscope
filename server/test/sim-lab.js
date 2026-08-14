@@ -11,12 +11,14 @@
 //   mqtt         :1883   open broker       |  :1884  auth-required broker
 //   snmp         :1161/udp  switch with a flaky cable on eth1 (community: public)
 //   bacnet       :47808/udp operational controller | :47809 non-operational
+//   dnp3         :20000  healthy outstation | :20001 restart IIN set
 
 import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
 import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
+import { startDnp3Sim } from './dnp3-sim.js';
 
 const services = [];
 
@@ -51,6 +53,10 @@ await up('bacnet operational', ':47808/udp (device 260001, Automated Logic)', ()
   startBacnetSim({ port: 47808, deviceInstance: 260001, vendorId: 36, systemStatus: 'operational' }));
 await up('bacnet non-operational', ':47809/udp (device 260002, non-operational)', () =>
   startBacnetSim({ port: 47809, deviceInstance: 260002, vendorId: 5, systemStatus: 'non-operational' }));
+await up('dnp3 healthy', ':20000  (outstation 1024, IIN clean)', () =>
+  startDnp3Sim({ port: 20000, outstation: 1024, iin1: 0x00, iin2: 0x00 }));
+await up('dnp3 restart-set', ':20001  (outstation 1025, device-restart IIN)', () =>
+  startDnp3Sim({ port: 20001, outstation: 1025, iin1: 0x80, iin2: 0x00 }));
 
 console.log(`[sim-lab] ${services.length} simulators up — Ctrl-C to stop`);
 
