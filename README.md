@@ -27,7 +27,7 @@ dependency-light implementations that run and are tested here.
 | **Commissioning report export** (self-contained HTML, findings-first, credential redaction, §12.8) | ✅ `server/src/report` |
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
-| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **S7comm** (rack/slot COTP + SZL identity) · **BACnet/IP** (Who-Is/I-Am + system-status) · **DNP3** (link-status + IIN-flag verdicts) · **MQTT** (topic tree + gated publish) |
+| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **S7comm** (rack/slot COTP + SZL identity) · **BACnet/IP** (Who-Is/I-Am + system-status) · **DNP3** (link-status + IIN-flag verdicts) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
@@ -60,6 +60,7 @@ The `simlab` container serves, at hostname `simlab` from inside the stack:
 | DNP3 | 20000 | outstation `1024`, IIN clean |
 | DNP3 | 20001 | outstation `1025` with the device-restart IIN bit set |
 | S7comm | 1102 | S7-300 (`6ES7 315`, rack 0 / slot 2 — refuses the wrong rack/slot) |
+| Sparkplug B | (via mqtt 1883) | edge node `Plant1/Line3` birthing + streaming with periodic rebirth |
 
 Evidence persists in the `fieldscope-data` volume across restarts. The image
 runs unprivileged; TCP/UDP drivers are fully functional in-container, while raw
@@ -104,16 +105,18 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 47 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 52 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 
 Each protocol tests against a live local simulator — a Modbus slave, an
-EtherNet/IP identity endpoint, an S7 PLC, an MQTT broker (aedes), an SNMP agent,
-a BACnet/IP controller, and a DNP3 outstation — so fault verdicts (gateway-dead,
-major-fault, wrong rack/slot, not-authorized, flaky-cable, non-operational, IIN
-device-restart / config-corrupt) are exercised on real sockets with no hardware
-or network. The DNP3 driver's CRC is checked against the opendnp3 reference. The same simulators
+EtherNet/IP identity endpoint, an S7 PLC, an MQTT broker (aedes), a Sparkplug B
+edge node, an SNMP agent, a BACnet/IP controller, and a DNP3 outstation — so
+fault verdicts (gateway-dead, major-fault, wrong rack/slot, not-authorized,
+flaky-cable, non-operational, IIN device-restart / config-corrupt, Sparkplug
+sequence-gap / node-death) are exercised on real sockets with no hardware or
+network. The DNP3 CRC is checked against the opendnp3 reference, and the
+Sparkplug protobuf codec round-trips through the driver's own decoder. The same simulators
 power the compose `lab` profile via `server/test/sim-lab.js`. CI runs the
 suite, builds the client, builds the Docker image, and smoke-tests the
 container on every push.
@@ -126,7 +129,7 @@ The full design spec is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Section 
 - **§4 Driver contract** → `contract/contract.js` (manifest normalize, `makeArtifact`, verbs).
 - **§4.1 Write double-gate** → `orchestrator/orchestrator.js` (`arm` / `prepareWrite` / `confirmWrite`) + `client/.../TopBar.jsx`, `WritePanel`.
 - **§5 Diagnose rules** → `rules/engine.js` + `server/rulepacks/*.yaml`.
-- **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/s7comm.js` (ISO-on-TCP/COTP rack-slot check + SZL order number/firmware), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/dnp3.js` (link-status addressing check + IIN-flag verdicts, wire-correct CRC), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write).
+- **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/s7comm.js` (ISO-on-TCP/COTP rack-slot check + SZL order number/firmware), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/dnp3.js` (link-status addressing check + IIN-flag verdicts, wire-correct CRC), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write), `drivers/sparkplug.js` (birth/death lifecycle + per-node sequence-gap detection with a dependency-free protobuf codec).
 - **§7 UI structure** → `client/src/components/*` (one repeated workspace, capability-driven tabs, Diagnose/Monitor/Raw).
 - **§7 Evidence & reporting / §12.8** → `report/report.js` (findings-first HTML commissioning report with credential redaction, exported per session from the Evidence view).
 - **§9 Evidence data model** → `evidence/store.js` (Target / Session / Artifact / Verdict / Audit; replay + diff).

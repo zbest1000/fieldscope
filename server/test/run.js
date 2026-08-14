@@ -19,6 +19,7 @@ import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
 import { startS7Sim } from './s7-sim.js';
+import { startSparkplugNode } from './sparkplug-node.js';
 
 let passed = 0;
 let failed = 0;
@@ -474,6 +475,63 @@ async function main() {
     assert.ok(['cotp-refused', 'port-closed'].includes(art.verdicts[0].rule_id));
   });
   s7Sim.server.close();
+
+  // ---- Sparkplug B driver against a broker + edge node ----
+  console.log('sparkplug driver (against broker + edge node)');
+  await test('protobuf codec round-trips seq and metrics', async () => {
+    const { encodePayload, decodePayload } = await import('../src/drivers/sparkplug.js');
+    const enc = encodePayload({ seq: 200, timestamp: 5, metrics: [{ name: 'Temperature', alias: 1, datatype: 9, intValue: 72 }] });
+    const dec = decodePayload(enc);
+    assert.strictEqual(dec.seq, 200);
+    assert.strictEqual(dec.metrics.length, 1);
+    assert.strictEqual(dec.metrics[0].name, 'Temperature');
+    assert.strictEqual(dec.metrics[0].alias, 1);
+  });
+  const spBroker = await startMqttBroker({});
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await test('healthy namespace: birth + contiguous seq diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1200 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantA', node: 'N1', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('a dropped sequence number produces the sequence-gap verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1400 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantB', node: 'N2', intervalMs: 70, gapAfter: 3 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'sequence-gap');
+    assert.ok(art.result.facts.sparkplug.total_gaps > 0);
+  });
+  await test('an NDEATH produces the node-death verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1400 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantC', node: 'N3', intervalMs: 70, emitDeathAfter: 4 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'node-death');
+  });
+  await test('browse renders the node tree with lifecycle state', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.runVerb(ses.id, 'browse', { window_ms: 1000 });
+    await sleep(150);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantD', node: 'N4', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    const points = art.result.tree[0].points;
+    assert.ok(points.some((pt) => pt.ref === 'PlantD/N4'));
+  });
+  await spBroker.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');
