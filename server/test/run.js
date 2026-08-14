@@ -18,6 +18,7 @@ import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
+import { startS7Sim } from './s7-sim.js';
 
 let passed = 0;
 let failed = 0;
@@ -438,6 +439,41 @@ async function main() {
     badSim.server.close();
   });
   dnpSim.server.close();
+
+  // ---- S7comm driver against the simulator ----
+  console.log('s7comm driver (against simulator)');
+  const s7Sim = await startS7Sim({ acceptRack: 0, acceptSlot: 2, refuseWrongSlot: true });
+  await test('connect completes COTP + S7 setup at the right rack/slot', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { rack: 0, slot: 2 });
+    assert.strictEqual(art.result.cotp_confirmed, true);
+    assert.strictEqual(art.result.s7_setup, true);
+    assert.strictEqual(art.result.negotiated_pdu, 480);
+  });
+  await test('identify reads the module order number and firmware from SZL', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { rack: 0, slot: 2 });
+    assert.strictEqual(art.result.order_number, '6ES7 315-2EH14-0AB0');
+    assert.strictEqual(art.result.firmware, '3.2');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected COTP tx/rx hex in raw');
+  });
+  await test('correct rack/slot diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.diagnose(ses.id, { rack: 0, slot: 2 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('wrong rack/slot produces the COTP-refused verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.diagnose(ses.id, { rack: 0, slot: 1, timeout: 1000 });
+    // The sim drops the connection on a wrong TSAP; the driver reports COTP not
+    // confirmed (or a transport error) — both resolve to an actionable verdict.
+    assert.ok(['cotp-refused', 'port-closed'].includes(art.verdicts[0].rule_id));
+  });
+  s7Sim.server.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');

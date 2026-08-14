@@ -12,6 +12,7 @@
 //   snmp         :1161/udp  switch with a flaky cable on eth1 (community: public)
 //   bacnet       :47808/udp operational controller | :47809 non-operational
 //   dnp3         :20000  healthy outstation | :20001 restart IIN set
+//   s7comm       :1102   S7-300 @ rack0/slot2 (refuses wrong rack/slot)
 
 import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
@@ -19,6 +20,7 @@ import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
+import { startS7Sim } from './s7-sim.js';
 
 const services = [];
 
@@ -57,6 +59,8 @@ await up('dnp3 healthy', ':20000  (outstation 1024, IIN clean)', () =>
   startDnp3Sim({ port: 20000, outstation: 1024, iin1: 0x00, iin2: 0x00 }));
 await up('dnp3 restart-set', ':20001  (outstation 1025, device-restart IIN)', () =>
   startDnp3Sim({ port: 20001, outstation: 1025, iin1: 0x80, iin2: 0x00 }));
+await up('s7comm S7-300', ':1102   (6ES7 315, rack 0/slot 2; refuses wrong slot)', () =>
+  startS7Sim({ port: 1102, acceptRack: 0, acceptSlot: 2, refuseWrongSlot: true }));
 
 console.log(`[sim-lab] ${services.length} simulators up — Ctrl-C to stop`);
 

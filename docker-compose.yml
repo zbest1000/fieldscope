@@ -10,7 +10,7 @@
 #   (operational) / 44819 (faulted) · mqtt 1883 (open) / 1884 (auth: ops/secret)
 #   · snmp 1161 (community "public", flaky cable on eth1) · bacnet 47808
 #   (operational) / 47809 (non-operational) · dnp3 20000 (clean) / 20001
-#   (device-restart IIN)
+#   (device-restart IIN) · s7comm 1102 (S7-300, rack 0/slot 2)
 
 services:
   fieldscope:
