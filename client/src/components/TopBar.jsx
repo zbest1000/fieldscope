@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
+import { Icon, Btn, Input, Kbd } from './ui.jsx';
 
-// Global chrome (§7): SOURCE adapter, state pill LIVE/READ-ONLY, ARM toggle.
-// Arming re-colors the whole shell as a standing hazard indication and shows
-// the auto-expiry countdown (§4.1).
+// Global chrome (§7): brand, SOURCE adapter, session, state pill LIVE/READ-ONLY,
+// ARM toggle. Arming re-colors the whole shell as a standing hazard indication
+// and shows the auto-expiry countdown (§4.1).
 export default function TopBar() {
   const { session, armed, armExpiresAt, arm, disarm, flash } = useStore();
   const [now, setNow] = useState(Date.now());
@@ -31,89 +32,97 @@ export default function TopBar() {
 
   return (
     <div
-      className={`flex items-center gap-4 px-4 h-12 border-b border-edge bg-panel2 text-sm shrink-0 ${
+      className={`relative flex items-center gap-4 px-4 h-14 border-b border-edge bg-panel2/80 backdrop-blur text-sm shrink-0 ${
         armed ? 'armed-chrome bg-[#2a1f08]' : ''
       }`}
     >
-      <div className="font-semibold tracking-wide text-slate-100">
-        FIELDSCOPE<span className="text-slate-500 ml-2 font-normal text-xs">Connected Core Industries</span>
+      {/* Brand */}
+      <div className="flex items-center gap-2.5">
+        <div className={`grid place-items-center h-8 w-8 rounded-lg ${armed ? 'bg-hazard text-black' : 'bg-emerald-500/15 text-emerald-400'}`}>
+          <Icon name="activity" size={18} strokeWidth={2.25} />
+        </div>
+        <div className="leading-tight">
+          <div className="font-semibold tracking-wide text-slate-100">FIELDSCOPE</div>
+          <div className="text-[10px] text-slate-500 -mt-0.5">Connected Core Industries</div>
+        </div>
       </div>
 
+      <div className="h-6 w-px bg-edge" />
+
       <div className="flex items-center gap-2 text-xs text-slate-400">
+        <Icon name="wifi" size={14} className="text-slate-500" />
         <span className="text-slate-500">SOURCE</span>
-        <span className="px-2 py-0.5 rounded bg-panel border border-edge">default NIC</span>
+        <span className="px-2 py-0.5 rounded bg-white/5 border border-edge text-slate-300">default NIC</span>
       </div>
 
       <div className="flex-1" />
 
-      {session && (
-        <div className="text-xs text-slate-400">
-          <span className="text-slate-500">session</span>{' '}
+      {session ? (
+        <div className="flex items-center gap-2 text-xs">
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          <span className="text-slate-500">session</span>
           <span className="font-mono text-slate-300">{session.address || session.driver_id}</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 text-xs text-slate-600">
+          <span className="h-1.5 w-1.5 rounded-full bg-slate-600" />
+          no session
         </div>
       )}
 
       {/* LIVE / READ-ONLY state pill */}
       <span
-        className={`px-3 py-1 rounded-full text-xs font-semibold border ${
-          armed
-            ? 'bg-hazard text-black border-hazard'
-            : 'bg-panel text-emerald-400 border-emerald-800'
+        className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border ${
+          armed ? 'bg-hazard text-black border-hazard animate-pulse-hazard' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
         }`}
       >
-        {armed ? '● LIVE-WRITE' : '● READ-ONLY'}
+        <Icon name={armed ? 'bolt' : 'shield'} size={13} strokeWidth={2.25} />
+        {armed ? 'LIVE-WRITE' : 'READ-ONLY'}
       </span>
 
       {/* ARM toggle — dark until deliberately enabled */}
       {armed ? (
-        <button
-          onClick={disarm}
-          className="px-3 py-1 rounded text-xs font-semibold bg-hazard text-black hover:brightness-110"
-        >
-          DISARM ({secsLeft}s)
-        </button>
+        <Btn variant="hazard" size="sm" onClick={disarm} icon="x">
+          DISARM · {secsLeft}s
+        </Btn>
       ) : (
-        <button
+        <Btn
+          variant="default"
+          size="sm"
           disabled={!session || !writeCapable}
           onClick={() => setConfirmOpen(true)}
-          title={!writeCapable ? 'active protocol is not write-capable' : 'arm the session for writes'}
-          className="px-3 py-1 rounded text-xs font-semibold border border-edge text-slate-400 hover:text-hazard hover:border-hazard disabled:opacity-30 disabled:hover:text-slate-400 disabled:hover:border-edge"
+          icon="bolt"
+          title={!session ? 'open a session first' : !writeCapable ? 'active protocol is not write-capable' : 'arm the session for writes'}
         >
           ARM
-        </button>
+        </Btn>
       )}
 
       {confirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="w-[420px] rounded-lg border border-hazard bg-panel p-5">
-            <div className="text-hazard font-semibold mb-1">Arm session for writes</div>
-            <p className="text-xs text-slate-400 mb-3">
-              Arming flips the whole session to LIVE-WRITE and re-colors the chrome as a standing
-              hazard. It auto-expires after inactivity. Type <span className="font-mono text-hazard">ARM</span> to
-              confirm (Gate 1 of the double-gate).
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div className="w-[440px] rounded-xl border border-hazard/60 bg-panel shadow-pop p-5">
+            <div className="flex items-center gap-2 text-hazard font-semibold mb-2">
+              <Icon name="bolt" size={18} strokeWidth={2.25} /> Arm session for writes
+            </div>
+            <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+              Arming flips the whole session to <b className="text-hazard">LIVE-WRITE</b> and re-colors the chrome as a
+              standing hazard. It auto-expires after inactivity. Type <Kbd>ARM</Kbd> to confirm — Gate 1 of the
+              double-gate.
             </p>
-            <input
+            <Input
               autoFocus
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && doArm()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') doArm();
+                if (e.key === 'Escape') setConfirmOpen(false);
+              }}
               placeholder="type ARM"
-              className="w-full bg-ink border border-edge rounded px-3 py-2 font-mono text-sm mb-3"
+              className="w-full font-mono mb-3"
             />
             <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmOpen(false)}
-                className="px-3 py-1.5 rounded text-xs border border-edge text-slate-400"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={doArm}
-                disabled={confirmText !== 'ARM'}
-                className="px-3 py-1.5 rounded text-xs font-semibold bg-hazard text-black disabled:opacity-40"
-              >
-                Arm
-              </button>
+              <Btn variant="ghost" size="sm" onClick={() => setConfirmOpen(false)}>Cancel</Btn>
+              <Btn variant="hazard" size="sm" onClick={doArm} disabled={confirmText !== 'ARM'} icon="bolt">Arm session</Btn>
             </div>
           </div>
         </div>

@@ -75,6 +75,19 @@ export const useStore = create((set, get) => ({
     get().flash(`Session open on ${driver.display_name}`);
   },
 
+  async disconnect() {
+    const s = get().session;
+    if (s) {
+      try {
+        await api.closeSession(s.id);
+      } catch {
+        /* ignore */
+      }
+    }
+    set({ session: null, armed: false, armExpiresAt: null, monitor: null });
+    get().flash('Session closed');
+  },
+
   async runVerb(verb, params) {
     const s = get().session;
     if (!s) throw new Error('open a session first');
