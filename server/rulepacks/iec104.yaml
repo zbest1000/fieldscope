@@ -1,0 +1,77 @@
+# IEC 60870-5-104 rulepack (§5, §6.3). The health signals are the APCI STARTDT
+# handshake and the General Interrogation's cause-of-transmission sequence.
+
+rulepack: iec104
+rules:
+  - id: port-closed
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "No IEC-104 endpoint at this address"
+      detail: >
+        TCP 2404 refused or unreachable. The RTU/gateway is offline, the address
+        or port is wrong, or a firewall drops it.
+      next_steps:
+        - "Confirm the RTU IP and that TCP 2404 is open"
+        - "IEC-104-over-TLS (2404) or a non-default port would also present this way"
+
+  - id: no-startdt
+    when:
+      transport.tcp_connect: success
+      startdt.confirmed: false
+      timeout: true
+    verdict:
+      severity: warn
+      title: "TCP open but STARTDT not confirmed"
+      detail: >
+        The socket connects but the station never answers STARTDT with a
+        confirmation, so it will never send data. The data-transfer direction is
+        stopped (STOPDT), the peer is speaking IEC-101/serial not 104, or an
+        allowed-client / redundancy-group restriction is dropping the connection.
+      next_steps:
+        - "Confirm the master is authorized (allowed originator / client IP)"
+        - "Check the station isn't held in STOPDT by a redundant master"
+
+  - id: unknown-common-address
+    when:
+      transport.tcp_connect: success
+      interrogation.unknown_common_address: true
+    verdict:
+      severity: error
+      title: "Station rejects the Common ASDU Address (COT 46)"
+      detail: >
+        STARTDT succeeded but the General Interrogation came back with
+        cause-of-transmission 46 (unknown common address). The master's
+        configured Common Address of ASDU does not match the station's — the
+        top "the link is up but no data flows" misconfiguration in IEC-104.
+      next_steps:
+        - "Set the master's Common ASDU Address to match the RTU's configured value"
+        - "Confirm the ASDU address width (1 vs 2 octets) matches on both ends"
+
+  - id: gi-rejected
+    when:
+      transport.tcp_connect: success
+      interrogation.negative: true
+    verdict:
+      severity: warn
+      title: "General Interrogation rejected (negative confirm)"
+      detail: >
+        The station confirmed the interrogation with the P/N bit set (negative).
+        It accepted STARTDT but declined the station poll — often a not-yet-
+        initialized RTU, a select/authority restriction, or a resource limit.
+      next_steps:
+        - "Retry after the station finishes initialization (M_EI_NA_1 end-of-init)"
+        - "Check whether the master has interrogation authority for this station"
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      startdt.confirmed: true
+      interrogation.activation_confirmed: true
+    verdict:
+      severity: ok
+      title: "IEC-104 station responding, interrogation confirmed"
+      detail: >
+        STARTDT was confirmed and the General Interrogation was activation-
+        confirmed; the station is transferring data normally.

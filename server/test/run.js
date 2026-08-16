@@ -18,6 +18,7 @@ import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
+import { startIec104Sim } from './iec104-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
@@ -453,6 +454,67 @@ async function main() {
     badSim.server.close();
   });
   dnpSim.server.close();
+
+  // ---- IEC 60870-5-104 driver against the simulator ----
+  console.log('iec104 driver (against simulator)');
+  const iecSim = await startIec104Sim({ commonAddress: 1 });
+  await test('APCI/ASDU codec round-trips STARTDT + an I-frame ASDU', async () => {
+    const { buildU, buildI, buildInterrogationAsdu, parseApdu, parseAsdu } = await import('../src/drivers/iec104.js');
+    const u = parseApdu(buildU(0x07));
+    assert.strictEqual(u.format, 'U');
+    assert.strictEqual(u.u, 'STARTDT_act');
+    const i = parseApdu(buildI(5, 3, buildInterrogationAsdu(7)));
+    assert.strictEqual(i.format, 'I');
+    assert.strictEqual(i.ns, 5);
+    assert.strictEqual(i.nr, 3);
+    assert.strictEqual(i.asdu.type_id, 100);
+    assert.strictEqual(i.asdu.common_address, 7);
+    assert.strictEqual(i.asdu.cot, 6);
+  });
+  await test('connect confirms the STARTDT handshake', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.result.startdt_confirmed, true);
+  });
+  await test('read returns the interrogated point list', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.result.points, 3);
+    const refs = art.result.tree[0].points.map((p) => p.ref);
+    assert.ok(refs.includes('IOA 1001'));
+  });
+  await test('healthy station diagnoses confirmed', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('wrong common address produces the COT-46 verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 99, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unknown-common-address');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+  });
+  await test('a station that never confirms STARTDT produces the silent-link verdict', async () => {
+    const silentSim = await startIec104Sim({ startdt: false });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: silentSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1000 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-startdt');
+    silentSim.close();
+  });
+  await test('a negative GI confirm produces the gi-rejected verdict', async () => {
+    const negSim = await startIec104Sim({ giNegative: true });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: negSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'gi-rejected');
+    negSim.close();
+  });
+  iecSim.close();
 
   // ---- S7comm driver against the simulator ----
   console.log('s7comm driver (against simulator)');

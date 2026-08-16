@@ -12,6 +12,7 @@
 //   snmp         :1161/udp  switch with a flaky cable on eth1 (community: public)
 //   bacnet       :47808/udp operational controller | :47809 non-operational
 //   dnp3         :20000  healthy outstation | :20001 restart IIN set
+//   iec104       :2404   healthy station (GI→3 points) | :2405 silent (no STARTDT con)
 //   s7comm       :1102   S7-300 @ rack0/slot2 (refuses wrong rack/slot)
 //   sparkplug          a Sparkplug B edge node publishing to the :1883 broker
 //                      (group Plant1 / node Line3; use the mqtt :1883 target)
@@ -28,6 +29,7 @@ import { startMqttBroker } from './mqtt-broker.js';
 import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
+import { startIec104Sim } from './iec104-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
@@ -71,6 +73,10 @@ await up('dnp3 healthy', ':20000  (outstation 1024, IIN clean)', () =>
   startDnp3Sim({ port: 20000, outstation: 1024, iin1: 0x00, iin2: 0x00 }));
 await up('dnp3 restart-set', ':20001  (outstation 1025, device-restart IIN)', () =>
   startDnp3Sim({ port: 20001, outstation: 1025, iin1: 0x80, iin2: 0x00 }));
+await up('iec104 healthy', ':2404   (common address 1, GI returns 3 points)', () =>
+  startIec104Sim({ port: 2404, commonAddress: 1 }));
+await up('iec104 silent-link', ':2405   (never confirms STARTDT)', () =>
+  startIec104Sim({ port: 2405, startdt: false }));
 await up('s7comm S7-300', ':1102   (6ES7 315, rack 0/slot 2; refuses wrong slot)', () =>
   startS7Sim({ port: 1102, acceptRack: 0, acceptSlot: 2, refuseWrongSlot: true }));
 await up('sparkplug edge node', '→ mqtt :1883 (Plant1/Line3, periodic rebirth)', () => {

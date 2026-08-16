@@ -10,7 +10,8 @@
 #   (operational) / 44819 (faulted) · mqtt 1883 (open) / 1884 (auth: ops/secret)
 #   · snmp 1161 (community "public", flaky cable on eth1) · bacnet 47808
 #   (operational) / 47809 (non-operational) · dnp3 20000 (clean) / 20001
-#   (device-restart IIN) · s7comm 1102 (S7-300, rack 0/slot 2) · sparkplug edge
+#   (device-restart IIN) · iec104 2404 (station, common address 1) / 2405
+#   (silent link, no STARTDT con) · s7comm 1102 (S7-300, rack 0/slot 2) · sparkplug edge
 #   node publishing to the mqtt 1883 broker (diagnose the `sparkplug` driver there)
 #   · opcua 4840 (UACP Hello/Ack handshake) · dhcp 6767/udp (single-server offer)
 #   · profinet-dcp 34964/udp (2 devices). Discovery drivers: ipscan (point at

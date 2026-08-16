@@ -32,7 +32,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
 | **Discovery** | **IP Scanner** (TCP host sweep, port scan, service ID) · **DHCP/BOOTP** (DISCOVER + option decode, rogue-server detection, address assignment in both **DHCP** DORA and classic **BOOTP** modes) · **PROFINET DCP + LLDP** (DCP Identify-All discovery, a **physical port topology** from LLDP — each device's ports and the port-to-port cabling — and **DCP Set** to commission station name / IP / subnet / gateway, ARM-gated) |
-| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **S7comm** (rack/slot COTP + SZL identity) · **BACnet/IP** (Who-Is/I-Am + system-status) · **DNP3** (link-status + IIN-flag verdicts) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection) · **OPC UA** (UACP handshake + error decode) |
+| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **S7comm** (rack/slot COTP + SZL identity) · **BACnet/IP** (Who-Is/I-Am + system-status) · **DNP3** (link-status + IIN-flag verdicts) · **IEC 60870-5-104** (STARTDT handshake + General Interrogation with COT verdicts) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection) · **OPC UA** (UACP handshake + error decode) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
@@ -64,6 +64,8 @@ The `simlab` container serves, at hostname `simlab` from inside the stack:
 | BACnet/IP | 47809/udp | controller reporting system-status non-operational (device `260002`) |
 | DNP3 | 20000 | outstation `1024`, IIN clean |
 | DNP3 | 20001 | outstation `1025` with the device-restart IIN bit set |
+| IEC 60870-5-104 | 2404 | station (common address `1`); General Interrogation returns 3 points |
+| IEC 60870-5-104 | 2405 | silent link — never confirms STARTDT (exercise the link-not-activated verdict) |
 | S7comm | 1102 | S7-300 (`6ES7 315`, rack 0 / slot 2 — refuses the wrong rack/slot) |
 | DHCP | 6767/udp | DHCP server offering `10.10.0.50` (point the `dhcp` driver: `server=127.0.0.1`, `server_port=6767`) |
 | PROFINET DCP | 34964/udp | DCP responder with `plc-line3` + `io-station-1` (point the `profinet-dcp` driver: `responder_port=34964`) |
@@ -113,17 +115,18 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 75 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 82 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 
 Each protocol tests against a live local simulator — a Modbus slave, an
 EtherNet/IP identity endpoint, an S7 PLC, an MQTT broker (aedes), a Sparkplug B
-edge node, an OPC UA server, an SNMP agent, a BACnet/IP controller, and a DNP3
-outstation — so fault verdicts (gateway-dead, major-fault, wrong rack/slot,
-not-authorized, flaky-cable, non-operational, IIN device-restart / config-corrupt,
-Sparkplug sequence-gap / node-death, OPC UA endpoint-URL-invalid) are exercised
-on real sockets with no hardware or network. The DNP3 CRC is checked against the
+edge node, an OPC UA server, an SNMP agent, a BACnet/IP controller, a DNP3
+outstation, and an IEC 60870-5-104 station — so fault verdicts (gateway-dead,
+major-fault, wrong rack/slot, not-authorized, flaky-cable, non-operational, IIN
+device-restart / config-corrupt, Sparkplug sequence-gap / node-death, OPC UA
+endpoint-URL-invalid, IEC-104 silent-link / wrong-common-address / GI-rejected)
+are exercised on real sockets with no hardware or network. The DNP3 CRC is checked against the
 opendnp3 reference, and the Sparkplug protobuf codec round-trips through the
 driver's own decoder. The same simulators
 power the compose `lab` profile via `server/test/sim-lab.js`. CI runs the
@@ -138,7 +141,7 @@ The full design spec is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Section 
 - **§4 Driver contract** → `contract/contract.js` (manifest normalize, `makeArtifact`, verbs).
 - **§4.1 Write double-gate** → `orchestrator/orchestrator.js` (`arm` / `prepareWrite` / `confirmWrite`) + `client/.../TopBar.jsx`, `WritePanel`.
 - **§5 Diagnose rules** → `rules/engine.js` + `server/rulepacks/*.yaml`.
-- **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/s7comm.js` (ISO-on-TCP/COTP rack-slot check + SZL order number/firmware), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/dnp3.js` (link-status addressing check + IIN-flag verdicts, wire-correct CRC), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write), `drivers/sparkplug.js` (birth/death lifecycle + per-node sequence-gap detection with a dependency-free protobuf codec), `drivers/opcua.js` (OPC UA UACP Hello/Acknowledge handshake + decoded protocol-error StatusCodes).
+- **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/s7comm.js` (ISO-on-TCP/COTP rack-slot check + SZL order number/firmware), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/dnp3.js` (link-status addressing check + IIN-flag verdicts, wire-correct CRC), `drivers/iec104.js` (IEC 60870-5-104 APCI STARTDT handshake + General Interrogation, with cause-of-transmission verdicts: link-not-activated, unknown-common-address (COT 46), GI-rejected), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write), `drivers/sparkplug.js` (birth/death lifecycle + per-node sequence-gap detection with a dependency-free protobuf codec), `drivers/opcua.js` (OPC UA UACP Hello/Acknowledge handshake + decoded protocol-error StatusCodes).
 - **§7 Discovery tier** → `drivers/ipscan.js` (TCP host sweep + port scan + service ID, concurrency-pooled and bounded), `drivers/dhcp.js` (DHCP DISCOVER + option decode + rogue-server detection, plus address assignment for a MAC in two modes — **DHCP** DORA DISCOVER→REQUEST→ACK/NAK and classic **BOOTP** single request/reply — as an ARM-gated write), `drivers/profinet-dcp.js` (discovery joining **DCP** Identify-All identity with **LLDP** (IEEE 802.1AB) neighbour detection: the `browse` verb reconstructs the physical port topology — each device's ports and which port cables to which neighbour port — with a logical-subnet fallback when no LLDP is present; plus duplicate-name / unconfigured-IP verdicts and a DCP **Set** write that reconfigures station name / IP / subnet / gateway behind the double-gate with an Identify read-back; the DCP/LLDP codecs run over a UDP test harness — real DCP/LLDP are raw Ethernet, declared `requires_l2`).
 - **§7 UI structure** → `client/src/components/*` (one repeated workspace, capability-driven tabs, Diagnose/Monitor/Raw).
 - **§7 Evidence & reporting / §12.8** → `report/report.js` (findings-first HTML commissioning report with credential redaction, exported per session from the Evidence view).
