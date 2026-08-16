@@ -96,8 +96,10 @@ drive reporting a Major Unrecoverable Fault.
 
 ### S7comm · `s7comm.js` · 102
 ISO-on-TCP (TPKT / COTP) connect at a specific **rack/slot**, then an SZL read
-for order number + firmware. Flagship: the wrong rack/slot is silently refused
-(looks like an offline PLC).
+for order number + firmware (`identify`). `read` runs an S7 **ReadVar** of a
+data block or memory area (DB / M / I / Q), returning the raw bytes with optional
+int16 / uint32 / float32 (big-endian) interpretation and the S7 return code.
+Flagship: the wrong rack/slot is silently refused (looks like an offline PLC).
 
 ### PROFINET DCP / LLDP ⚡ · `profinet-dcp.js` · raw L2
 Two protocols joined. **DCP** `identify` runs Identify-All discovery (station

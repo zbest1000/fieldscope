@@ -665,6 +665,24 @@ async function main() {
     const art = await orchestrator.diagnose(ses.id, { rack: 0, slot: 2 });
     assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
   });
+  await test('read fetches DB bytes via ReadVar and interprets them', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    // DB1.DBB0, 8 bytes, as uint16 → [100, 200, then the float bytes as two words].
+    const u16 = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 1, start: 0, count: 4, format: 'uint16' });
+    assert.strictEqual(u16.result.status, 'success');
+    assert.deepStrictEqual(u16.result.values, [100, 200]);
+    assert.strictEqual(u16.result.address, 'DB1.DBB0');
+    // The float at byte 4.
+    const f = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 1, start: 4, count: 4, format: 'float32' });
+    assert.ok(Math.abs(f.result.values[0] - 50.24) < 0.01, `got ${f.result.values[0]}`);
+  });
+  await test('reading a non-existent DB returns the S7 return code', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 99, start: 0, count: 2 });
+    assert.strictEqual(art.result.status, 'object does not exist');
+  });
   await test('wrong rack/slot produces the COTP-refused verdict', async () => {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });

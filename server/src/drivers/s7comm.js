@@ -25,8 +25,8 @@ export const manifest = {
   mode: 'full',
   lib: '🟢 raw ISO-on-TCP/COTP/S7',
   describe:
-    'COTP rack/slot connection check, S7 PDU-size negotiation, and SZL identity (order number + firmware).',
-  verbs: ['connect', 'identify', 'monitor', 'diagnose'],
+    'COTP rack/slot connection check, S7 PDU-size negotiation, SZL identity (order number + firmware), and ReadVar of a DB / memory area.',
+  verbs: ['connect', 'identify', 'read', 'monitor', 'diagnose'],
   params: {
     connect: {
       rack: { type: 'number', default: 0, min: 0, max: 7 },
@@ -36,8 +36,23 @@ export const manifest = {
       rack: { type: 'number', default: 0, min: 0, max: 31 },
       slot: { type: 'number', default: 1, min: 0, max: 31 },
     },
+    // ReadVar: read `count` bytes from a data block (DB) or memory area (M / I /
+    // Q), optionally interpreting them as wider big-endian types.
+    read: {
+      area: { type: 'enum', options: ['DB', 'M', 'I', 'Q'], default: 'DB' },
+      db: { type: 'number', default: 1, min: 0, max: 65535 },
+      start: { type: 'number', default: 0, min: 0, max: 65535 },
+      count: { type: 'number', default: 8, min: 1, max: 222 },
+      format: { type: 'enum', options: ['bytes', 'uint16', 'int16', 'uint32', 'int32', 'float32'], default: 'bytes' },
+      rack: { type: 'number', default: 0, min: 0, max: 7 },
+      slot: { type: 'number', default: 1, min: 0, max: 31 },
+    },
   },
 };
+
+// S7 area codes and read-item return codes.
+const S7_AREA = { DB: 0x84, M: 0x83, I: 0x81, Q: 0x82 };
+const S7_RETURN = { 0x00: 'reserved', 0x03: 'access denied', 0x05: 'address out of range', 0x06: 'data type not supported', 0x07: 'data type inconsistent', 0x0a: 'object does not exist', 0xff: 'success' };
 
 // ---- TPKT / COTP framing ---------------------------------------------------
 function tpkt(payload) {
@@ -117,6 +132,61 @@ function s7ReadSzl(szlId, index) {
   return cotpData(Buffer.concat([header, params, data]));
 }
 
+// S7 ReadVar (job, function 0x04): one S7ANY item addressing `count` bytes at
+// byte `start` of a DB / memory area. Addresses are bit-granular on the wire.
+function s7ReadVar(area, db, start, count) {
+  const ref = nextRef();
+  const bitAddr = start * 8;
+  const item = Buffer.from([
+    0x12, 0x0a, 0x10, // var spec, len 10, syntax id S7ANY
+    0x02, // transport size = BYTE
+    (count >> 8) & 0xff, count & 0xff, // number of elements
+    (db >> 8) & 0xff, db & 0xff, // DB number
+    S7_AREA[area] ?? 0x84, // area
+    (bitAddr >> 16) & 0xff, (bitAddr >> 8) & 0xff, bitAddr & 0xff, // start address (bits)
+  ]);
+  const params = Buffer.concat([Buffer.from([0x04, 0x01]), item]); // ReadVar, item count 1
+  const header = Buffer.alloc(10);
+  header[0] = 0x32;
+  header[1] = 0x01; // ROSCTR = job
+  header.writeUInt16BE(0, 2);
+  header.writeUInt16BE(ref, 4);
+  header.writeUInt16BE(params.length, 6);
+  header.writeUInt16BE(0, 8);
+  return cotpData(Buffer.concat([header, params]));
+}
+
+// Parse a ReadVar ack_data: one data item = return code, transport size, length,
+// then the bytes (length is in bits for the BYTE/WORD transport size).
+function parseReadVarResponse(buf) {
+  if (buf.length < 21 || buf[7] !== 0x32) return { error: 'not-s7' };
+  const paramLen = buf.readUInt16BE(13);
+  const o = 19 + paramLen; // data items start after the 12-byte ack header + params
+  if (o + 4 > buf.length) return { error: 'no-data-item' };
+  const returnCode = buf[o];
+  const transportSize = buf[o + 1];
+  const lengthField = buf.readUInt16BE(o + 2);
+  const byteLen = transportSize === 0x09 || transportSize === 0x07 ? lengthField : Math.ceil(lengthField / 8);
+  return {
+    return_code: returnCode,
+    return_text: S7_RETURN[returnCode] || `0x${returnCode.toString(16)}`,
+    ok: returnCode === 0xff,
+    transport_size: transportSize,
+    bytes: buf.subarray(o + 4, o + 4 + byteLen),
+  };
+}
+
+// Interpret raw big-endian bytes (S7 is big-endian) as a wider numeric type.
+function interpretS7(bytes, format) {
+  const out = [];
+  if (format === 'uint16') { for (let i = 0; i + 2 <= bytes.length; i += 2) out.push(bytes.readUInt16BE(i)); return out; }
+  if (format === 'int16') { for (let i = 0; i + 2 <= bytes.length; i += 2) out.push(bytes.readInt16BE(i)); return out; }
+  if (format === 'uint32') { for (let i = 0; i + 4 <= bytes.length; i += 4) out.push(bytes.readUInt32BE(i)); return out; }
+  if (format === 'int32') { for (let i = 0; i + 4 <= bytes.length; i += 4) out.push(bytes.readInt32BE(i)); return out; }
+  if (format === 'float32') { for (let i = 0; i + 4 <= bytes.length; i += 4) out.push(Math.round(bytes.readFloatBE(i) * 1000) / 1000); return out; }
+  return [...bytes]; // raw byte values
+}
+
 function parseSetupResponse(buf) {
   // TPKT(4)+COTP(3)=7, S7 header for ack_data is 12 bytes, params follow.
   if (buf.length < 27 || buf[7] !== 0x32) return { error: 'not-s7' };
@@ -149,12 +219,12 @@ function parseSzlModuleId(buf) {
   return { order_number: mlfb, version, record_count: recordCount, record_len: recordLen };
 }
 
-async function s7Session(ctx, { withSzl } = {}) {
+async function s7Session(ctx, { withSzl, read } = {}) {
   const timeout = ctx.params?.timeout ?? 3000;
   const rack = ctx.params?.rack ?? 0;
   const slot = ctx.params?.slot ?? 1;
   const { socket, connectMs } = await tcpConnect(ctx.host, ctx.port || 102, timeout);
-  const frames = { cr: null, cc: null, setupReq: null, setupResp: null, szlReq: null, szlResp: null };
+  const frames = { cr: null, cc: null, setupReq: null, setupResp: null, szlReq: null, szlResp: null, readReq: null, readResp: null };
   try {
     // 1) COTP connection (rack/slot).
     const cr = cotpConnectionRequest(rack, slot);
@@ -183,7 +253,20 @@ async function s7Session(ctx, { withSzl } = {}) {
         szl = null;
       }
     }
-    return { cotp_ok: true, setup, szl, frames, connectMs, cotpRtt, rttMs };
+    let readResult = null;
+    if (read && !setup.error) {
+      // 3') ReadVar of the requested DB / memory area.
+      const readReq = s7ReadVar(read.area, read.db, read.start, read.count);
+      frames.readReq = readReq;
+      try {
+        const { data: readResp } = await tcpRequest(socket, readReq, { timeout, isComplete: tpktComplete });
+        frames.readResp = readResp;
+        readResult = parseReadVarResponse(readResp);
+      } catch {
+        readResult = null;
+      }
+    }
+    return { cotp_ok: true, setup, szl, read: readResult, frames, connectMs, cotpRtt, rttMs };
   } finally {
     socket.destroy();
   }
@@ -196,6 +279,8 @@ function rawOf(frames) {
     setup_tx: frames.setupReq ? Buffer.from(frames.setupReq).toString('hex') : null,
     setup_rx: frames.setupResp ? Buffer.from(frames.setupResp).toString('hex') : null,
     szl_rx: frames.szlResp ? Buffer.from(frames.szlResp).toString('hex') : null,
+    read_tx: frames.readReq ? Buffer.from(frames.readReq).toString('hex') : null,
+    read_rx: frames.readResp ? Buffer.from(frames.readResp).toString('hex') : null,
   };
 }
 
@@ -289,6 +374,52 @@ export const verbs = {
           result: { error: err.code || err.message },
           error: err,
         }),
+        facts: errorFacts(err),
+      };
+    }
+  },
+
+  // Read = COTP + setup + ReadVar of a DB / memory area, optionally interpreted.
+  async read(ctx) {
+    const area = ctx.params?.area ?? 'DB';
+    const db = ctx.params?.db ?? 1;
+    const start = ctx.params?.start ?? 0;
+    const count = ctx.params?.count ?? 8;
+    const format = ctx.params?.format ?? 'bytes';
+    try {
+      const r = await s7Session(ctx, { read: { area, db, start, count } });
+      if (!r.cotp_ok) {
+        return {
+          artifact: makeArtifact({ verb: 'read', raw: rawOf(r.frames), result: { cotp_confirmed: false, note: 'COTP refused — check rack/slot' } }),
+          facts: facts(r),
+        };
+      }
+      const rd = r.read;
+      const ok = !!(rd && rd.ok);
+      const addr = area === 'DB' ? `DB${db}.DBB${start}` : `${area}${start}`;
+      return {
+        artifact: makeArtifact({
+          verb: 'read',
+          raw: rawOf(r.frames),
+          decode: rd,
+          result: {
+            area,
+            db: area === 'DB' ? db : undefined,
+            start,
+            count,
+            format,
+            address: addr,
+            status: rd ? rd.return_text : 'no response',
+            values: ok ? interpretS7(rd.bytes, format) : null,
+            bytes: ok ? rd.bytes.toString('hex') : undefined,
+            negotiated_pdu: r.setup ? r.setup.negotiated_pdu : null,
+          },
+        }),
+        facts: facts(r),
+      };
+    } catch (err) {
+      return {
+        artifact: makeArtifact({ verb: 'read', raw: `error: ${err.code || err.message}`, result: { error: err.code || err.message }, error: err }),
         facts: errorFacts(err),
       };
     }

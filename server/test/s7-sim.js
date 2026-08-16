@@ -59,13 +59,51 @@ export function startS7Sim({
       const rosctr = s7[1];
       const ref = s7.readUInt16BE(4);
       if (rosctr === 0x01) {
-        // Setup communication → ack_data with negotiated PDU 480.
-        socket.write(setupAck(ref));
+        // Job: distinguish setup-communication (func 0xf0) from ReadVar (0x04).
+        const func = s7[10];
+        if (func === 0x04) socket.write(readVarResponse(ref, s7));
+        else socket.write(setupAck(ref));
       } else if (rosctr === 0x07) {
         // Read SZL → module identification response.
         socket.write(szlResponse(ref, orderNumber, version));
       }
     }
+  }
+
+  // A small DB1 dataset: uint16 100 @0, uint16 200 @2, float 50.24 @4 (big-endian).
+  const db1 = Buffer.alloc(64);
+  db1.writeUInt16BE(100, 0);
+  db1.writeUInt16BE(200, 2);
+  db1.writeFloatBE(50.24, 4);
+
+  function readVarResponse(ref, s7) {
+    const params = s7.subarray(10);
+    const item = params.subarray(2, 14); // 0x12,0x0a,0x10,tsize,len(2),db(2),area,addr(3)
+    const count = (item[4] << 8) | item[5];
+    const db = (item[6] << 8) | item[7];
+    const area = item[8];
+    const start = ((item[9] << 16) | (item[10] << 8) | item[11]) >> 3; // bit → byte
+    if (area === 0x84 && db === 1 && start + count <= db1.length) {
+      return readVarAck(ref, db1.subarray(start, start + count), 0xff);
+    }
+    return readVarAck(ref, Buffer.alloc(0), 0x0a); // object does not exist
+  }
+
+  function readVarAck(ref, data, returnCode) {
+    const dataItem = returnCode === 0xff
+      ? Buffer.concat([Buffer.from([0xff, 0x04, (data.length * 8) >> 8, (data.length * 8) & 0xff]), data]) // len in bits
+      : Buffer.from([returnCode, 0x00, 0x00, 0x00]);
+    const params = Buffer.from([0x04, 0x01]); // ReadVar, item count 1
+    const header = Buffer.alloc(12);
+    header[0] = 0x32;
+    header[1] = 0x03; // ack_data
+    header.writeUInt16BE(0, 2);
+    header.writeUInt16BE(ref, 4);
+    header.writeUInt16BE(params.length, 6);
+    header.writeUInt16BE(dataItem.length, 8);
+    header[10] = 0x00;
+    header[11] = 0x00;
+    return tpkt(Buffer.concat([Buffer.from([0x02, 0xf0, 0x80]), header, params, dataItem]));
   }
 
   function setupAck(ref) {
