@@ -55,7 +55,8 @@ const U_NAME = Object.fromEntries(Object.entries(U).map(([k, v]) => [v, k]));
 // Type identifications we decode (monitor + system + the GI command).
 const TYPE = {
   1: 'M_SP_NA_1 (single-point)', 3: 'M_DP_NA_1 (double-point)', 9: 'M_ME_NA_1 (measured, normalized)',
-  11: 'M_ME_NB_1 (measured, scaled)', 13: 'M_ME_NC_1 (measured, short float)', 30: 'M_SP_TB_1 (single-point +time)',
+  11: 'M_ME_NB_1 (measured, scaled)', 13: 'M_ME_NC_1 (measured, short float)',
+  30: 'M_SP_TB_1 (single-point +time)', 31: 'M_DP_TB_1 (double-point +time)', 36: 'M_ME_TF_1 (measured, short float +time)',
   70: 'M_EI_NA_1 (end of init)', 100: 'C_IC_NA_1 (interrogation command)', 45: 'C_SC_NA_1 (single command)',
 };
 // Cause of transmission (COT, low 6 bits).
@@ -125,8 +126,28 @@ export function splitApdus(buf) {
   return { frames, rest: buf.subarray(off) };
 }
 
-// Information-element size in bytes (the part after the 3-byte IOA).
-const ELEM = { 1: 1, 3: 1, 9: 3, 11: 3, 13: 5, 30: 8, 45: 1, 100: 1, 70: 1 };
+// Information-element size in bytes (the part after the 3-byte IOA). The +time
+// types append a 7-byte CP56Time2a timestamp.
+const ELEM = { 1: 1, 3: 1, 9: 3, 11: 3, 13: 5, 30: 8, 31: 8, 36: 12, 45: 1, 100: 1, 70: 1 };
+
+// Decode a 7-byte CP56Time2a timestamp → a readable "YYYY-MM-DD HH:MM:SS.mmm"
+// plus the IV (invalid) and SU (summer-time) flags. Formatted from the raw
+// fields (no Date construction) so it reports exactly what the wire carried.
+export function decodeCp56Time2a(b) {
+  const millis = b.readUInt16LE(0); // milliseconds within the minute (0-59999)
+  const minute = b[2] & 0x3f;
+  const invalid = !!(b[2] & 0x80);
+  const hour = b[3] & 0x1f;
+  const summer_time = !!(b[3] & 0x80);
+  const day = b[4] & 0x1f;
+  const day_of_week = (b[4] >> 5) & 0x07;
+  const month = b[5] & 0x0f;
+  const year = 2000 + (b[6] & 0x7f);
+  const second = Math.floor(millis / 1000);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const time = `${year}-${p2(month)}-${p2(day)} ${p2(hour)}:${p2(minute)}:${p2(second)}.${String(millis % 1000).padStart(3, '0')}`;
+  return { time, invalid, summer_time, day_of_week };
+}
 
 function decodeElement(typeId, buf) {
   switch (typeId) {
@@ -135,6 +156,9 @@ function decodeElement(typeId, buf) {
     case 9: return { value: buf.readInt16LE(0) / 32768, quality: qualityBits(buf[2]) }; // normalized
     case 11: return { value: buf.readInt16LE(0), quality: qualityBits(buf[2]) }; // scaled
     case 13: return { value: round(buf.readFloatLE(0)), quality: qualityBits(buf[4]) }; // short float
+    case 30: { const t = decodeCp56Time2a(buf.subarray(1, 8)); return { value: buf[0] & 0x01, quality: qualityBits(buf[0]), time: t.time, time_invalid: t.invalid }; } // single-point +time
+    case 31: { const t = decodeCp56Time2a(buf.subarray(1, 8)); return { value: buf[0] & 0x03, quality: qualityBits(buf[0]), time: t.time, time_invalid: t.invalid }; } // double-point +time
+    case 36: { const t = decodeCp56Time2a(buf.subarray(5, 12)); return { value: round(buf.readFloatLE(0)), quality: qualityBits(buf[4]), time: t.time, time_invalid: t.invalid }; } // short float +time
     case 45: return { scs: buf[0] & 0x01, select: !!(buf[0] & 0x80), qu: (buf[0] >> 2) & 0x1f }; // SCO
     case 100: return { qoi: buf[0] };
     default: return { raw: buf.toString('hex') };
@@ -503,7 +527,7 @@ async function readPoints(ctx) {
                 points: gi.points.map((p) => ({
                   ref: `IOA ${p.ioa}`,
                   value: p.value ?? p.raw ?? '—',
-                  type: `${p.type}${p.quality?.invalid ? ' · INVALID' : ''}`,
+                  type: `${p.type}${p.time ? ' · ' + p.time : ''}${p.quality?.invalid ? ' · INVALID' : ''}`,
                 })),
               }],
               types: gi.types,

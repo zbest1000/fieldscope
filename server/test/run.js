@@ -481,9 +481,26 @@ async function main() {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
     const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
-    assert.strictEqual(art.result.points, 4); // 3 measured + 1 single-point (breaker)
+    assert.strictEqual(art.result.points, 5); // 3 measured + 1 single-point (breaker) + 1 time-tagged event
     const refs = art.result.tree[0].points.map((p) => p.ref);
     assert.ok(refs.includes('IOA 1001') && refs.includes('IOA 2001'));
+  });
+  await test('a time-tagged event (M_SP_TB_1) decodes its CP56Time2a timestamp', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    const event = art.decode.find((p) => p.ioa === 2101);
+    assert.ok(event, 'expected the time-tagged event at IOA 2101');
+    assert.strictEqual(event.time, '2026-08-16 14:30:12.345');
+    assert.strictEqual(event.value, 1);
+  });
+  await test('CP56Time2a codec round-trips through the driver decoder', async () => {
+    const { decodeCp56Time2a } = await import('../src/drivers/iec104.js');
+    // 2026-08-16 14:30:12.345 → ms 12345 (0x3039 LE), min 30, hr 14, day 16, mon 8, yr 26
+    const buf = Buffer.from([0x39, 0x30, 30, 14, 16, 8, 26]);
+    const t = decodeCp56Time2a(buf);
+    assert.strictEqual(t.time, '2026-08-16 14:30:12.345');
+    assert.strictEqual(t.invalid, false);
   });
   await test('single command drives the point through select-before-operate (double-gate)', async () => {
     const { orchestrator } = makeStack();

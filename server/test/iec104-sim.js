@@ -35,6 +35,21 @@ function asduCommandReply(cot, commonAddress, ioa, sco) {
   // C_SC_NA_1 confirmation/termination echoes the IOA + SCO.
   return Buffer.concat([asduHead(45, 1, cot, commonAddress), ioaBytes(ioa), Buffer.from([sco & 0xff])]);
 }
+// Encode a 7-byte CP56Time2a timestamp from calendar fields.
+function encodeCp56Time2a({ year, month, day, hour, minute, second = 0, ms = 0 }) {
+  const b = Buffer.alloc(7);
+  b.writeUInt16LE((second * 1000 + ms) & 0xffff, 0);
+  b[2] = minute & 0x3f;
+  b[3] = hour & 0x1f;
+  b[4] = day & 0x1f;
+  b[5] = month & 0x0f;
+  b[6] = (year - 2000) & 0x7f;
+  return b;
+}
+// M_SP_TB_1: single-point status with a CP56Time2a event timestamp.
+function asduSinglePointTimeData(cot, commonAddress, ioa, value, timeBuf) {
+  return Buffer.concat([asduHead(30, 1, cot, commonAddress), ioaBytes(ioa), Buffer.from([value & 0x01]), timeBuf]);
+}
 
 export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, giNegative = false, points = null, commandNegative = false } = {}) {
   const pts = points || [
@@ -44,6 +59,9 @@ export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, gi
   ];
   const singlePoints = [{ ioa: 2001, value: 0 }]; // a controllable breaker (open)
   const spOf = (ioa) => singlePoints.find((p) => p.ioa === ioa);
+  // A time-tagged event (M_SP_TB_1) delivered spontaneously in the GI window, so
+  // the driver's CP56Time2a decode is exercised end-to-end. Fixed for determinism.
+  const timeEvent = { ioa: 2101, value: 1, at: { year: 2026, month: 8, day: 16, hour: 14, minute: 30, second: 12, ms: 345 } };
   const server = net.createServer((socket) => {
     let pending = Buffer.alloc(0);
     let ns = 0; // our send sequence
@@ -83,6 +101,7 @@ export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, gi
           sendI(asduInterrogationReply(7, commonAddress)); // activation confirmation
           sendI(asduFloatData(20, commonAddress, pts)); // interrogated measured data
           sendI(asduSinglePointData(20, commonAddress, singlePoints)); // interrogated status
+          sendI(asduSinglePointTimeData(3, commonAddress, timeEvent.ioa, timeEvent.value, encodeCp56Time2a(timeEvent.at))); // spontaneous time-tagged event
           sendI(asduInterrogationReply(10, commonAddress)); // activation termination
           return;
         }
