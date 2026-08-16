@@ -148,8 +148,9 @@ ARM-gated write. Flagship: auth-required / not-authorized CONNACK verdicts.
 
 ### Sparkplug B · `sparkplug.js` · 1883
 Decodes the NBIRTH / NDATA / NDEATH lifecycle with a dependency-free protobuf
-codec; `browse` shows the node tree with lifecycle state. Detects **sequence
-gaps and node death** per edge node.
+codec; `browse` shows the node tree with lifecycle state; `read` resolves metric
+**aliases → names** from the births and shows the latest metric values per node.
+Detects **sequence gaps and node death** per edge node.
 
 ### OPC UA · `opcua.js` · 4840
 UACP Hello / Acknowledge handshake and negotiated transport limits; decodes

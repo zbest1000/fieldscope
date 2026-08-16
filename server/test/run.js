@@ -734,6 +734,7 @@ async function main() {
     assert.strictEqual(dec.metrics.length, 1);
     assert.strictEqual(dec.metrics[0].name, 'Temperature');
     assert.strictEqual(dec.metrics[0].alias, 1);
+    assert.strictEqual(dec.metrics[0].value, 72); // int_value decoded
   });
   const spBroker = await startMqttBroker({});
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -767,6 +768,21 @@ async function main() {
     const art = await p;
     await node.stop();
     assert.strictEqual(art.verdicts[0].rule_id, 'node-death');
+  });
+  await test('read resolves live metric values (aliases resolved from births)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.runVerb(ses.id, 'read', { group: 'PlantR', window_ms: 1200 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantR', node: 'NR', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    const area = art.result.tree.find((a) => a.area.includes('PlantR/NR'));
+    assert.ok(area, 'expected the PlantR/NR node with metrics');
+    const byName = Object.fromEntries(area.points.map((pt) => [pt.ref, pt.value]));
+    assert.strictEqual(byName.Pressure, 30); // from the birth
+    assert.strictEqual(byName.RunState, 1);
+    assert.ok(Number(byName.Temperature) >= 72); // alias 1, updated by NDATA
   });
   await test('browse renders the node tree with lifecycle state', async () => {
     const { orchestrator } = makeStack();

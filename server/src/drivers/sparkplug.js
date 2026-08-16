@@ -30,10 +30,16 @@ export const manifest = {
   lib: '🟢 minimal protobuf codec',
   describe:
     'Birth/death lifecycle tracking, per-node sequence-gap detection, and metric-alias resolution over MQTT.',
-  verbs: ['connect', 'browse', 'monitor', 'diagnose'],
+  verbs: ['connect', 'browse', 'read', 'monitor', 'diagnose'],
   params: {
     connect: { username: { type: 'string' }, password: { type: 'string' } },
     browse: {
+      group: { type: 'string', default: '#' },
+      window_ms: { type: 'number', default: 3000, min: 500, max: 15000 },
+      username: { type: 'string' },
+      password: { type: 'string' },
+    },
+    read: {
       group: { type: 'string', default: '#' },
       window_ms: { type: 'number', default: 3000, min: 500, max: 15000 },
       username: { type: 'string' },
@@ -101,6 +107,7 @@ function decodeMetric(buf) {
   let name = null;
   let alias = null;
   let datatype = null;
+  let value; // Sparkplug value fields: 10 int, 11 long, 12 float, 13 double, 14 bool, 15 string
   while (pos < buf.length) {
     const { value: tag, pos: p1 } = readVarint(buf, pos);
     pos = p1;
@@ -111,19 +118,24 @@ function decodeMetric(buf) {
       pos = p2;
       const end = pos + Number(len);
       if (field === 1) name = buf.subarray(pos, end).toString('utf8');
+      else if (field === 15) value = buf.subarray(pos, end).toString('utf8'); // string_value
       pos = end;
     } else if (wtype === 0) {
-      const { value, pos: p2 } = readVarint(buf, pos);
+      const { value: v, pos: p2 } = readVarint(buf, pos);
       pos = p2;
-      if (field === 2) alias = Number(value);
-      else if (field === 4) datatype = Number(value);
+      if (field === 2) alias = Number(v);
+      else if (field === 4) datatype = Number(v);
+      else if (field === 10 || field === 11) value = Number(v); // int / long value
+      else if (field === 14) value = Number(v) !== 0; // boolean value
     } else if (wtype === 1) {
+      if (field === 13) value = buf.readDoubleLE(pos); // double value
       pos += 8;
     } else if (wtype === 5) {
+      if (field === 12) value = Math.round(buf.readFloatLE(pos) * 1000) / 1000; // float value
       pos += 4;
     } else break;
   }
-  return { name, alias, datatype };
+  return { name, alias, datatype, value: value === undefined ? null : value };
 }
 
 // ---- minimal protobuf writer (for the simulator / tests) -------------------
@@ -207,10 +219,20 @@ async function observe(ctx, { windowMs, filter = 'spBv1.0/#' } = {}) {
       const k = keyOf(t);
       let st = nodes.get(k);
       if (!st) {
-        st = { group: t.group, node: t.node, births: 0, deaths: 0, messages: 0, lastSeq: null, gaps: 0, sawBirthFirst: null, metrics: 0, online: true };
+        st = { group: t.group, node: t.node, births: 0, deaths: 0, messages: 0, lastSeq: null, gaps: 0, sawBirthFirst: null, metrics: 0, online: true, aliasToName: new Map(), metricValues: new Map() };
         nodes.set(k, st);
       }
       st.messages += 1;
+      // Resolve metric aliases from births and track the latest value per metric
+      // (DATA carries alias-only, so the birth's alias→name map is required).
+      if (decoded && decoded.metrics) {
+        for (const m of decoded.metrics) {
+          if (m.name != null && m.alias != null) st.aliasToName.set(m.alias, m.name);
+          const nm = m.name ?? (m.alias != null ? st.aliasToName.get(m.alias) : null) ?? (m.alias != null ? `alias ${m.alias}` : 'unnamed');
+          if (m.value !== null && m.value !== undefined) st.metricValues.set(nm, m.value);
+          else if (!st.metricValues.has(nm)) st.metricValues.set(nm, null);
+        }
+      }
       if (t.type === 'NBIRTH' || t.type === 'DBIRTH') {
         st.births += 1;
         st.online = true;
@@ -293,6 +315,35 @@ export const verbs = {
         verb: 'browse',
         raw: `observed spBv1.0 for ${windowMs}ms → ${obs.nodes.length} node(s), ${obs.events.length} lifecycle/seq event(s)`,
         result: { tree: [{ area: `Sparkplug namespace (${windowMs}ms window)`, points }], ...summarize(obs) },
+      }),
+      facts: {},
+    };
+  },
+
+  // Read = the latest metric values per node, with aliases resolved to names
+  // from the births (DATA carries alias-only).
+  async read(ctx) {
+    const windowMs = Math.min(15000, Math.max(500, ctx.params?.window_ms ?? 3000));
+    const group = ctx.params?.group && ctx.params.group !== '#' ? ctx.params.group : null;
+    const filter = group ? `spBv1.0/${group}/#` : 'spBv1.0/#';
+    const obs = await observe(ctx, { windowMs, filter });
+    if (!obs.connected) {
+      return {
+        artifact: makeArtifact({ verb: 'read', raw: 'MQTT connect failed', result: { error: 'connect failed' }, error: new Error('connect failed') }),
+        facts: {},
+      };
+    }
+    const withMetrics = obs.nodes.filter((n) => n.metricValues.size > 0);
+    const tree = withMetrics.map((n) => ({
+      area: `${n.group}/${n.node} · ${n.metricValues.size} metric(s)${n.online ? '' : ' · OFFLINE'}`,
+      points: [...n.metricValues.entries()].map(([name, val]) => ({ ref: name, value: val === null ? '—' : val, type: '' })),
+    }));
+    const metricTotal = withMetrics.reduce((a, n) => a + n.metricValues.size, 0);
+    return {
+      artifact: makeArtifact({
+        verb: 'read',
+        raw: `observed spBv1.0 for ${windowMs}ms → ${withMetrics.length} node(s), ${metricTotal} metric(s)`,
+        result: tree.length ? { tree, nodes: withMetrics.length, metrics: metricTotal } : { nodes: 0, note: 'no metrics observed in the window' },
       }),
       facts: {},
     };

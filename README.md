@@ -32,7 +32,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
 | **Discovery** | **IP Scanner** (TCP host sweep, port scan, service ID) · **DHCP/BOOTP** (DISCOVER + option decode, rogue-server detection, address assignment in both **DHCP** DORA and classic **BOOTP** modes) · **PROFINET DCP + LLDP** (DCP Identify-All discovery, a **physical port topology** from LLDP — each device's ports and the port-to-port cabling — and **DCP Set** to commission station name / IP / subnet / gateway, ARM-gated) |
-| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write with int16/uint32/int32/float32 interpretation; 32-bit setpoints via FC16) · **EtherNet/IP + CIP** (identity/status-word verdicts; CIP Get_Attribute_Single reads) · **S7comm** (rack/slot COTP + SZL identity; ReadVar DB/memory read) · **BACnet/IP** (Who-Is/I-Am + system-status; object-list browse) · **DNP3** (link-status + IIN-flag verdicts; Class 0 binary/analog point decode) · **IEC 60870-5-104** (STARTDT handshake + General Interrogation with COT verdicts; select-before-operate control command) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection) · **OPC UA** (UACP handshake + error decode) |
+| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write with int16/uint32/int32/float32 interpretation; 32-bit setpoints via FC16) · **EtherNet/IP + CIP** (identity/status-word verdicts; CIP Get_Attribute_Single reads) · **S7comm** (rack/slot COTP + SZL identity; ReadVar DB/memory read) · **BACnet/IP** (Who-Is/I-Am + system-status; object-list browse) · **DNP3** (link-status + IIN-flag verdicts; Class 0 binary/analog point decode) · **IEC 60870-5-104** (STARTDT handshake + General Interrogation with COT verdicts; select-before-operate control command) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection; live metric-value read with alias resolution) · **OPC UA** (UACP handshake + error decode) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
@@ -118,7 +118,7 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 99 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 100 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 
