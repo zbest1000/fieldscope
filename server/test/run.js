@@ -395,6 +395,10 @@ async function main() {
     const art = await orchestrator.runVerb(ses.id, 'identify', { community: 'public' });
     assert.strictEqual(art.result.name, 'fieldscope-sim-switch');
     assert.ok(art.result.uptime_days > 0);
+    // System-group enrichment: sysContact + vendor decoded from sysObjectID.
+    assert.strictEqual(art.result.contact, 'fieldscope');
+    assert.strictEqual(art.result.enterprise, 99999); // 1.3.6.1.4.1.99999.1
+    assert.strictEqual(art.result.vendor, 'enterprise 99999');
   });
   await test('interface error counters produce the flaky-cable verdict', async () => {
     const { orchestrator } = makeStack();

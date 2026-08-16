@@ -35,9 +35,26 @@ const SYSTEM_OIDS = {
   sysDescr: '1.3.6.1.2.1.1.1.0',
   sysObjectID: '1.3.6.1.2.1.1.2.0',
   sysUpTime: '1.3.6.1.2.1.1.3.0',
+  sysContact: '1.3.6.1.2.1.1.4.0',
   sysName: '1.3.6.1.2.1.1.5.0',
   sysLocation: '1.3.6.1.2.1.1.6.0',
 };
+
+// A handful of IANA private-enterprise numbers (sysObjectID = 1.3.6.1.4.1.<n>.…)
+// so the device names its own maker; unknown numbers render as "enterprise <n>".
+const ENTERPRISE = {
+  2: 'IBM', 9: 'Cisco', 11: 'Hewlett-Packard', 43: '3Com', 63: 'Apple', 171: 'D-Link',
+  207: 'Allied Telesis', 231: 'Siemens', 253: 'Xerox', 311: 'Microsoft', 674: 'Dell',
+  789: 'NetApp', 2011: 'Huawei', 2636: 'Juniper', 4526: 'Netgear', 6027: 'Force10',
+  8072: 'Net-SNMP', 30065: 'Arista', 41112: 'Ubiquiti',
+};
+
+function vendorFromObjectId(oid) {
+  const m = /^1\.3\.6\.1\.4\.1\.(\d+)/.exec(oid || '');
+  if (!m) return { enterprise: null, vendor: null };
+  const ent = Number(m[1]);
+  return { enterprise: ent, vendor: ENTERPRISE[ent] || `enterprise ${ent}` };
+}
 
 const IF_TABLE_OID = '1.3.6.1.2.1.2.2';
 // ifEntry column numbers we surface.
@@ -105,14 +122,19 @@ async function readSystem(ctx) {
   const oids = Object.values(SYSTEM_OIDS);
   const { error, varbinds, rttMs } = await snmpGet(ctx, oids);
   if (error) return { error, timeout: isTimeout(error), rttMs };
-  const [descr, objectId, upTime, name, location] = varbinds;
+  const [descr, objectId, upTime, contact, name, location] = varbinds;
+  const objId = vbString(objectId);
+  const ent = vendorFromObjectId(objId);
   return {
     rttMs,
     system: {
       descr: vbString(descr),
-      object_id: vbString(objectId),
+      object_id: objId,
+      vendor: ent.vendor,
+      enterprise: ent.enterprise,
       uptime_ticks: upTime && !snmp.isVarbindError(upTime) ? Number(upTime.value) : null,
       uptime_days: upTime && !snmp.isVarbindError(upTime) ? ticksToDays(upTime.value) : null,
+      contact: vbString(contact),
       name: vbString(name),
       location: vbString(location),
     },
@@ -169,7 +191,7 @@ export const verbs = {
     return {
       artifact: makeArtifact({
         verb: 'identify',
-        raw: `GET sysDescr/sysObjectID/sysUpTime/sysName/sysLocation in ${r.rttMs.toFixed(1)}ms`,
+        raw: `GET sysDescr/sysObjectID/sysUpTime/sysContact/sysName/sysLocation in ${r.rttMs.toFixed(1)}ms`,
         result: { reachable: true, ...r.system, rtt_ms: r.rttMs },
       }),
       facts: { transport: { snmp_response: 'success' }, system: r.system, timeout: false },
