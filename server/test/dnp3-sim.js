@@ -30,6 +30,23 @@ function frameComplete(buf) {
   return buf.length >= 10 + userLen + Math.ceil(userLen / 16) * 2;
 }
 
+function floatLE(v) { const b = Buffer.alloc(4); b.writeFloatLE(v, 0); return b; }
+
+// A small Class 0 static dataset: 3 binary inputs (g1v2) + 2 analog inputs
+// (g30v5 float), both with an online flag, using 8-bit start/stop range headers.
+function buildClass0Objects() {
+  const g1 = Buffer.concat([
+    Buffer.from([0x01, 0x02, 0x00, 0x00, 0x02]), // g1 v2, qual 0x00, index 0..2
+    Buffer.from([0x81, 0x01, 0x81]), // BI0=1, BI1=0, BI2=1 (all online; state in bit7)
+  ]);
+  const g30 = Buffer.concat([
+    Buffer.from([0x1e, 0x05, 0x00, 0x00, 0x01]), // g30 v5, qual 0x00, index 0..1
+    Buffer.concat([Buffer.from([0x01]), floatLE(230.4)]),
+    Buffer.concat([Buffer.from([0x01]), floatLE(12.7)]),
+  ]);
+  return Buffer.concat([g1, g30]);
+}
+
 export function startDnp3Sim({ port = 0, outstation = 1024, iin1 = 0x00, iin2 = 0x00 } = {}) {
   const server = net.createServer((socket) => {
     let pending = Buffer.alloc(0);
@@ -53,9 +70,10 @@ export function startDnp3Sim({ port = 0, outstation = 1024, iin1 = 0x00, iin2 = 
       // Request Link Status → Link Status (function 11), DIR=0, PRM=0.
       socket.write(buildFrame(0x0b, master, outstation, Buffer.alloc(0)));
     } else if (func === 0x04 || func === 0x03) {
-      // (Un)confirmed user data carrying an application READ → RESPONSE with IIN.
+      // (Un)confirmed user data carrying an application READ → RESPONSE with IIN
+      // and the Class 0 static dataset.
       const transport = Buffer.from([0xc0]);
-      const app = Buffer.from([0xc0, 0x81, iin1, iin2]); // ctrl, RESPONSE, IIN1, IIN2
+      const app = Buffer.concat([Buffer.from([0xc0, 0x81, iin1, iin2]), buildClass0Objects()]); // ctrl, RESPONSE, IIN1, IIN2, objects
       // DIR=0 (from outstation), PRM=1, function 3 (unconfirmed user data)... use
       // unconfirmed user data 0x44 -> DIR bit clear: 0x44 = PRM=1,func=4.
       socket.write(buildFrame(0x44, master, outstation, Buffer.concat([transport, app])));

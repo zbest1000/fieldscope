@@ -25,13 +25,21 @@ export const manifest = {
   lib: '🟢 raw link/transport/app',
   describe:
     'Link-status addressing check and Class 0 integrity read with IIN-flag verdicts (restart, time-sync, config-corrupt, events).',
-  verbs: ['connect', 'identify', 'monitor', 'diagnose'],
+  verbs: ['connect', 'identify', 'browse', 'read', 'monitor', 'diagnose'],
   params: {
     connect: {
       source: { type: 'number', default: 1, min: 0, max: 65519 },
       destination: { type: 'number', default: 1024, min: 0, max: 65519 },
     },
     identify: {
+      source: { type: 'number', default: 1, min: 0, max: 65519 },
+      destination: { type: 'number', default: 1024, min: 0, max: 65519 },
+    },
+    browse: {
+      source: { type: 'number', default: 1, min: 0, max: 65519 },
+      destination: { type: 'number', default: 1024, min: 0, max: 65519 },
+    },
+    read: {
       source: { type: 'number', default: 1, min: 0, max: 65519 },
       destination: { type: 'number', default: 1024, min: 0, max: 65519 },
     },
@@ -148,6 +156,68 @@ function buildClass0Read() {
   return Buffer.concat([transport, app]);
 }
 
+const round = (n) => Math.round(n * 1000) / 1000;
+
+// DNP3 status flags octet (common low bits across binary/analog objects).
+function decodeDnp3Flags(b) {
+  return { online: !!(b & 0x01), restart: !!(b & 0x02), comm_lost: !!(b & 0x04), remote_forced: !!(b & 0x08), local_forced: !!(b & 0x10) };
+}
+const DNP3_GROUP = { 1: 'Binary Input', 20: 'Counter', 30: 'Analog Input', 40: 'Analog Output Status' };
+function dnp3TypeName(group, variation) {
+  return `${DNP3_GROUP[group] || `g${group}`} g${group}v${variation}`;
+}
+
+// Decode one object's value at offset o. Returns { value, flags, size } or size
+// null when the variation isn't understood (parsing stops safely). Covers the
+// common Class 0 static variations an integrity poll returns.
+function decodeDnp3Point(group, variation, buf, o) {
+  if (group === 1) { // Binary Input
+    if (variation === 2) { const b = buf[o]; return { value: (b >> 7) & 1, flags: decodeDnp3Flags(b), size: 1 }; } // with flags (state in bit7)
+  } else if (group === 30) { // Analog Input
+    if (variation === 1) return { value: buf.readInt32LE(o + 1), flags: decodeDnp3Flags(buf[o]), size: 5 }; // 32-bit + flag
+    if (variation === 2) return { value: buf.readInt16LE(o + 1), flags: decodeDnp3Flags(buf[o]), size: 3 }; // 16-bit + flag
+    if (variation === 3) return { value: buf.readInt32LE(o), size: 4 };
+    if (variation === 4) return { value: buf.readInt16LE(o), size: 2 };
+    if (variation === 5) return { value: round(buf.readFloatLE(o + 1)), flags: decodeDnp3Flags(buf[o]), size: 5 }; // float + flag
+  } else if (group === 20) { // Counter
+    if (variation === 1) return { value: buf.readUInt32LE(o + 1) >>> 0, flags: decodeDnp3Flags(buf[o]), size: 5 };
+    if (variation === 5) return { value: buf.readUInt32LE(o) >>> 0, size: 4 };
+  }
+  return { value: null, size: null };
+}
+
+// Walk DNP3 object blocks (group, variation, qualifier, range, data) into points.
+export function parseDnp3Objects(buf) {
+  const points = [];
+  let o = 0;
+  while (o + 3 <= buf.length) {
+    const group = buf[o];
+    const variation = buf[o + 1];
+    const qualifier = buf[o + 2];
+    o += 3;
+    const prefix = (qualifier >> 4) & 0x07; // 0 = none, 1 = 1-byte index, 2 = 2-byte index
+    const range = qualifier & 0x0f;
+    let start = 0;
+    let count = 0;
+    if (range === 0x00) { start = buf[o]; count = buf[o + 1] - start + 1; o += 2; } // 8-bit start/stop
+    else if (range === 0x01) { start = buf.readUInt16LE(o); count = buf.readUInt16LE(o + 2) - start + 1; o += 4; } // 16-bit start/stop
+    else if (range === 0x07) { count = buf[o]; o += 1; } // 1-byte count of objects
+    else if (range === 0x08) { count = buf.readUInt16LE(o); o += 2; } // 2-byte count of objects
+    else break; // unsupported qualifier — stop safely
+    if (count < 0 || count > 10000) break;
+    for (let i = 0; i < count; i++) {
+      let index = start + i;
+      if (prefix === 1) { index = buf[o]; o += 1; }
+      else if (prefix === 2) { index = buf.readUInt16LE(o); o += 2; }
+      const d = decodeDnp3Point(group, variation, buf, o);
+      if (d.size == null || o + d.size > buf.length) { o = buf.length; break; } // unknown/short → stop
+      o += d.size;
+      points.push({ group, variation, index, value: d.value, flags: d.flags, type: dnp3TypeName(group, variation) });
+    }
+  }
+  return points;
+}
+
 function parseAppResponse(userData) {
   if (userData.length < 4) return { error: 'short-application-response' };
   // userData[0] is the transport header; application starts at 1.
@@ -162,6 +232,7 @@ function parseAppResponse(userData) {
     iin1,
     iin2,
     iin: decodeIIN(iin1, iin2),
+    objects: userData.length > 5 ? parseDnp3Objects(userData.subarray(5)) : [],
   };
 }
 
@@ -172,6 +243,40 @@ async function transact(host, port, frame, timeout) {
     return { response: data, connectMs, rttMs };
   } finally {
     socket.destroy();
+  }
+}
+
+async function readPoints(ctx) {
+  const timeout = ctx.params?.timeout ?? 3000;
+  try {
+    const r = await class0(ctx, timeout);
+    const points = r.app?.objects || [];
+    return {
+      artifact: makeArtifact({
+        verb: 'read',
+        raw: bytesRaw(r.request, r.response),
+        decode: points,
+        result: points.length
+          ? {
+              points: points.length,
+              tree: [{
+                area: `outstation ${r.parsed.src} · ${points.length} point(s)`,
+                points: points.map((p) => ({
+                  ref: `${p.type.split(' g')[0]} ${p.index}`,
+                  value: p.value,
+                  type: `${p.type}${p.flags && !p.flags.online ? ' · OFFLINE' : ''}${p.flags?.comm_lost ? ' · COMM-LOST' : ''}${p.flags?.restart ? ' · RESTART' : ''}`,
+                })),
+              }],
+            }
+          : { points: 0, note: r.app ? 'Class 0 returned no decodable objects' : 'no valid application response' },
+      }),
+      facts: iinFacts(r.app, r.rttMs),
+    };
+  } catch (err) {
+    return {
+      artifact: makeArtifact({ verb: 'read', raw: `error: ${err.code || err.message}`, result: { error: err.code || err.message }, error: err }),
+      facts: errorFacts(err),
+    };
   }
 }
 
@@ -290,6 +395,11 @@ export const verbs = {
       };
     }
   },
+
+  // Browse / Read = the Class 0 integrity poll, decoded into a point table
+  // (binary + analog inputs) rather than just the IIN summary.
+  async browse(ctx) { return readPoints(ctx); },
+  async read(ctx) { return readPoints(ctx); },
 
   async monitorSample(ctx) {
     try {

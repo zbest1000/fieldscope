@@ -115,10 +115,12 @@ Who-Is / I-Am discovery + device-object read for **system status**. `read`
 pulls object properties. Flagship: a controller reporting non-operational.
 
 ### DNP3 · `dnp3.js` · 20000
-Link-status addressing check + Class 0 integrity read, decoded to the **IIN**
-(Internal Indications) word. Flagship bits: device-restart, need-time,
-event-buffer overflow, configuration-corrupt. Wire-correct CRC (checked against
-the opendnp3 reference).
+Link-status addressing check + Class 0 integrity read. `identify` decodes the
+**IIN** (Internal Indications) word — device-restart, need-time, event-buffer
+overflow, configuration-corrupt; `read` / `browse` decode the Class 0 objects
+(binary inputs g1v2, analog inputs g30v1-5, counters) into a point table with
+per-point flags (online / comm-lost / restart). Wire-correct CRC (checked
+against the opendnp3 reference).
 
 ### IEC 60870-5-104 ⚡ · `iec104.js` · 2404
 APCI (U / S / I frames) + ASDU decode. `connect` runs the STARTDT handshake;

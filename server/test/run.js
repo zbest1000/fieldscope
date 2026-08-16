@@ -478,6 +478,26 @@ async function main() {
     const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1024 });
     assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
   });
+  await test('read decodes Class 0 binary + analog input points', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.points, 5); // 3 binary + 2 analog
+    const bi = art.decode.filter((p) => p.group === 1);
+    const ai = art.decode.filter((p) => p.group === 30);
+    assert.deepStrictEqual(bi.map((p) => p.value), [1, 0, 1]);
+    assert.ok(Math.abs(ai[0].value - 230.4) < 0.01 && Math.abs(ai[1].value - 12.7) < 0.01);
+    assert.strictEqual(ai[0].flags.online, true);
+  });
+  await test('parseDnp3Objects decodes an object block directly', async () => {
+    const { parseDnp3Objects } = await import('../src/drivers/dnp3.js');
+    // g30 v1 (32-bit analog + flag), qual 0x00, index 5..5, flag online, value 12345.
+    const buf = Buffer.from([0x1e, 0x01, 0x00, 0x05, 0x05, 0x01, 0x39, 0x30, 0x00, 0x00]);
+    const pts = parseDnp3Objects(buf);
+    assert.strictEqual(pts.length, 1);
+    assert.strictEqual(pts[0].index, 5);
+    assert.strictEqual(pts[0].value, 12345);
+  });
   await test('device-restart IIN bit produces the restart verdict', async () => {
     const restartSim = await startDnp3Sim({ outstation: 1025, iin1: 0x80, iin2: 0x00 });
     const { orchestrator } = makeStack();
