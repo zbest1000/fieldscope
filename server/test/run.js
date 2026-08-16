@@ -581,7 +581,7 @@ async function main() {
   });
   uaSim.server.close();
 
-  // ---- IP Scanner (nmap-style) ----
+  // ---- IP Scanner (TCP host/port discovery) ----
   console.log('ip scanner (discovery)');
   // Two ad-hoc TCP services on ephemeral ports: one open, plus a known-closed one.
   const svcA = net.createServer((s) => s.on('error', () => {}));
@@ -681,7 +681,7 @@ async function main() {
   });
   dhcpSim.close();
 
-  // ---- PROFINET DCP (PRONETA-style) ----
+  // ---- PROFINET DCP / LLDP ----
   console.log('profinet-dcp (discovery)');
   const dcpSim = await startProfinetDcpSim({});
   await test('identify decodes device station name / IP / vendor / role', async () => {

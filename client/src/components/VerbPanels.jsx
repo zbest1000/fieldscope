@@ -150,9 +150,9 @@ function TopoWarnings({ extra, note }) {
   );
 }
 
-// PROFINET DCP topology map. Physical (LLDP) draws device boxes with their ports
-// and the port-to-port cabling — PRONETA's headline view. Logical (DCP-only) is
-// the subnet → controller → device fallback when no LLDP neighbours are seen.
+// PROFINET topology map. Physical (LLDP) draws device boxes with their ports and
+// the port-to-port cabling. Logical (DCP-only) is the subnet → controller →
+// device fallback when no LLDP neighbours are seen.
 function TopologyView({ topo, extra }) {
   if ((topo.nodes || []).length === 0) {
     return <EmptyState title="No devices on the segment" icon="layers">{topo.note || 'Run Identify-All against a segment with devices.'}</EmptyState>;

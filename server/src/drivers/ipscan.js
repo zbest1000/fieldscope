@@ -1,4 +1,4 @@
-// IP Scanner (§7 Discovery, §6.1). An nmap-style discovery driver built on the
+// IP Scanner (§7 Discovery, §6.1). A TCP host/port discovery driver built on the
 // bounded TCP transport: host discovery across a CIDR, port scanning (curated
 // common ports or an explicit range), and service identification by well-known
 // port plus a light banner grab. Everything is concurrency-pooled and bounded
@@ -25,7 +25,7 @@ export const manifest = {
   default_port: null,
   mode: 'full',
   lib: '🟢 raw sockets',
-  describe: 'nmap-style host discovery, port scan, and service identification. Bounded and rate-limited.',
+  describe: 'TCP host discovery, port scan, and service identification. Bounded and rate-limited.',
   verbs: ['connect', 'identify', 'browse', 'read', 'monitor', 'diagnose'],
   params: {
     connect: { port: { type: 'number', default: 80, min: 1, max: 65535 } },

@@ -24,7 +24,7 @@ export const manifest = {
   write_capable: true,
   mode: 'full',
   lib: '🟢 raw options',
-  describe: 'DHCP DISCOVER + OFFER option decode (subnet/router/DNS/lease); rogue / multi-server detection; BOOTP-style address assignment (DISCOVER→REQUEST→ACK) as an ARM-gated write.',
+  describe: 'DHCP DISCOVER + OFFER option decode (subnet/router/DNS/lease); rogue / multi-server detection; address assignment for a MAC in DHCP (DORA) or classic BOOTP mode as an ARM-gated write.',
   verbs: ['identify', 'diagnose', 'write'],
   params: {
     identify: {

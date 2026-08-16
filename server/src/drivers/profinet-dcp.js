@@ -1,16 +1,17 @@
-// PROFINET DCP driver (§6.2) — the PRONETA-style "who is on this segment"
-// discovery. DCP (Discovery and Configuration Protocol) is how a commissioning
-// tool finds PROFINET devices, reads their station name / IP / vendor / role,
-// flashes a device's LED, and assigns names and addresses. Its flagship
-// diagnostic is exactly the commissioning pain: a brand-new device that has a
-// name but no IP (0.0.0.0), or two devices sharing one station name.
+// PROFINET DCP + LLDP driver (§6.2) — "who is on this segment and how is it
+// wired". DCP (Discovery and Configuration Protocol) finds PROFINET devices and
+// reads their station name / IP / vendor / role, and assigns names and
+// addresses; LLDP (IEEE 802.1AB) supplies the per-port neighbour table that
+// reconstructs the physical port-to-port topology. Its flagship diagnostic is
+// the commissioning pain: a brand-new device that has a name but no IP
+// (0.0.0.0), or two devices sharing one station name.
 //
-// Honest transport note (§10, §11): real DCP rides *raw Ethernet* — a Layer-2
-// multicast, EtherType 0x8892 — so it needs a raw/mirror adapter and admin
-// rights (declared requires_l2 / requires_admin). This build implements the DCP
-// PDU codec (the substance — the frame knowledge Wireshark-grade decoders carry)
-// and exercises it over a UDP test responder (the sim lab, or a DCP-over-UDP
-// gateway). On a live plant network the same codec is driven over the L2 socket.
+// Honest transport note (§10, §11): real DCP and LLDP ride *raw Ethernet* —
+// Layer-2 multicasts, EtherTypes 0x8892 (DCP) and 0x88cc (LLDP) — so they need a
+// raw/mirror adapter and admin rights (declared requires_l2 / requires_admin).
+// This build implements the DCP and LLDP PDU codecs and exercises them over a
+// UDP test responder (the sim lab, or an L2-over-UDP gateway). On a live plant
+// network the same codecs are driven over the L2 socket.
 
 import dgram from 'node:dgram';
 import crypto from 'node:crypto';
@@ -18,7 +19,7 @@ import { makeArtifact } from '../contract/contract.js';
 
 export const manifest = {
   id: 'profinet-dcp',
-  display_name: 'PROFINET DCP (PRONETA-style)',
+  display_name: 'PROFINET DCP / LLDP',
   domain: 'industrial',
   group: 'industrial',
   transport: ['l2'],
@@ -27,8 +28,8 @@ export const manifest = {
   requires_admin: true,
   write_capable: true,
   mode: 'full',
-  lib: '🟡 raw Ethernet (0x8892)',
-  describe: 'Identify-All discovery + a live topology map; DCP Set to commission station name / IP / subnet / gateway (ARM-gated). Needs a raw/mirror Ethernet adapter on real networks.',
+  lib: '🟡 raw Ethernet (DCP 0x8892 / LLDP 0x88cc)',
+  describe: 'DCP Identify-All discovery, an LLDP physical port topology, and DCP Set to commission station name / IP / subnet / gateway (ARM-gated). Needs a raw/mirror Ethernet adapter on real networks.',
   verbs: ['identify', 'browse', 'write', 'diagnose'],
   params: {
     identify: {
@@ -42,9 +43,9 @@ export const manifest = {
       responder_port: { type: 'number', default: 34964, min: 1, max: 65535 },
       window_ms: { type: 'number', default: 2000, min: 500, max: 8000 },
     },
-    // DCP Set — the PRONETA commissioning write. `target` selects the device by
-    // its current station name; set-name renames it, set-ip assigns the IP /
-    // subnet / gateway. Gated behind ARM + per-write confirm (§4.1).
+    // DCP Set — the commissioning write. `target` selects the device by its
+    // current station name; set-name renames it, set-ip assigns the IP / subnet
+    // / gateway. Gated behind ARM + per-write confirm (§4.1).
     write: {
       operation: { type: 'enum', options: ['set-name', 'set-ip'], default: 'set-ip' },
       target: { type: 'string', default: '' },
@@ -186,15 +187,15 @@ function networkOf(ipStr, maskStr) {
 }
 
 // ---- LLDP neighbour discovery (the port-level half of the topology) --------
-// PRONETA's headline view — a device's ports and which port cables to which
+// The physical topology — a device's ports and which port cables to which
 // neighbour port — is reconstructed from LLDP (IEEE 802.1AB, EtherType 0x88cc),
 // not DCP. Each PROFINET port multicasts an LLDPDU announcing its own chassis
 // (station name) + port; a receiver learns its neighbour from the frame arriving
-// on a given local port. PRONETA either passively captures every LLDPDU on the
-// segment or reads each device's lldpRemoteSystemsData MIB, then joins them into
-// port-to-port links. Real LLDP is raw L2 (declared requires_l2); over the UDP
-// test harness the responder returns the already-resolved remote table, encoded
-// as LLDP TLV frames, so one collect call yields the same links PRONETA draws.
+// on a given local port. A collector either passively captures every LLDPDU on
+// the segment or reads each device's lldpRemoteSystemsData MIB, then joins them
+// into port-to-port links. Real LLDP is raw L2 (declared requires_l2); over the
+// UDP test harness the responder returns the already-resolved remote table,
+// encoded as LLDP TLV frames, so one collect call yields the same link set.
 const LLDP_MARK = 0x88cc; // harness marker for an LLDP-collect request
 const LLDP_TLV = { END: 0, CHASSIS_ID: 1, PORT_ID: 2, TTL: 3, PORT_DESC: 4, SYS_NAME: 5, ORG: 127 };
 const PNO_OUI = Buffer.from([0x00, 0x0e, 0xcf]); // PROFINET (PNO) organisationally-unique id
@@ -273,7 +274,7 @@ function collectLldp(ctx) {
       seen.add(key);
       const r = parseLldpFrame(msg);
       // Keep every advertised port (a free port has no remote) so the map can
-      // show available ports, not just cabled ones — PRONETA does the same.
+      // show available ports, not just cabled ones.
       if (r && r.station && (r.port_desc || r.port_id)) rows.push(r);
     });
     const timer = setTimeout(() => finish(null), windowMs);
@@ -284,9 +285,9 @@ function collectLldp(ctx) {
 const kindOf = (role) => ((role || '').includes('Controller') ? 'controller' : (role || '').includes('Supervisor') ? 'supervisor' : 'device');
 
 // Physical topology from LLDP: device boxes carrying their ports, joined by
-// port-to-port cables (deduped so A→B and B→A collapse to one link). This is
-// the PRONETA view — you can read which local port connects to which neighbour
-// port. DCP identity (IP / vendor / role) is merged in per station.
+// port-to-port cables (deduped so A→B and B→A collapse to one link) — you can
+// read which local port connects to which neighbour port. DCP identity (IP /
+// vendor / role) is merged in per station.
 function buildPhysicalTopology(devices, rows) {
   const byName = new Map();
   const ensure = (station) => {
@@ -335,7 +336,7 @@ function buildPhysicalTopology(devices, rows) {
     kind: 'physical',
     nodes: [...byName.values()],
     links,
-    note: 'Physical topology from LLDP (IEEE 802.1AB) — device ports and the port-to-port cabling PRONETA reconstructs. Device identity/IP is joined in from DCP. Real LLDP is raw Ethernet 0x88cc (declared requires_l2); collected here over the UDP test harness.',
+    note: 'Physical topology from LLDP (IEEE 802.1AB) — device ports and the port-to-port cabling. Device identity/IP is joined in from DCP. Real LLDP is raw Ethernet 0x88cc (declared requires_l2); collected here over the UDP test harness.',
   };
 }
 
@@ -373,7 +374,7 @@ function buildLogicalTopology(devices) {
     kind: 'logical',
     nodes,
     edges,
-    note: 'Logical topology from DCP (station name / role / subnet) — no LLDP neighbours were seen, so port-level cabling is unknown. On a live segment PRONETA draws the physical port graph from LLDP.',
+    note: 'Logical topology from DCP (station name / role / subnet) — no LLDP neighbours were seen, so port-level cabling is unknown. On a live segment the physical port graph is drawn from LLDP.',
   };
 }
 
@@ -502,8 +503,8 @@ export const verbs = {
 
   // Browse the segment as a topology map. Joins DCP identity (who is here, what
   // IP/role) with the LLDP remote table (which port cables to which neighbour
-  // port) into the PRONETA-style physical graph; falls back to the logical DCP
-  // view when no LLDP neighbours are seen.
+  // port) into the physical graph; falls back to the logical DCP view when no
+  // LLDP neighbours are seen.
   async browse(ctx) {
     const [res, lldp] = await Promise.all([identifyAll(ctx), collectLldp(ctx)]);
     const topology = lldp.rows.length > 0 ? buildPhysicalTopology(res.devices, lldp.rows) : buildLogicalTopology(res.devices);
