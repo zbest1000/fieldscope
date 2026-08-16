@@ -100,10 +100,16 @@ function Timeline({ session, artifacts }) {
         <h2 className="text-sm uppercase tracking-wider text-slate-400 font-semibold">Session replay</h2>
         <Badge>{artifacts.length} artifacts</Badge>
         <a
+          href={`/api/sessions/${session.id}/inventory.csv`}
+          className="ml-auto inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-edge2 bg-raised/60 text-slate-200 hover:bg-raised"
+        >
+          <Icon name="download" size={14} /> Inventory CSV
+        </a>
+        <a
           href={`/api/sessions/${session.id}/report`}
           target="_blank"
           rel="noreferrer"
-          className="ml-auto inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-edge2 bg-raised/60 text-slate-200 hover:bg-raised"
+          className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-edge2 bg-raised/60 text-slate-200 hover:bg-raised"
         >
           <Icon name="download" size={14} /> Export commissioning report
         </a>

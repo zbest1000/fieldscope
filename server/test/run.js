@@ -1047,6 +1047,17 @@ async function main() {
     assert.strictEqual(red.params.address, 3);
     assert.ok(!html.includes('hunter2'));
   });
+  await test('inventory CSV export lists enumerated points with a header row', async () => {
+    const { toInventoryCsv } = await import('../src/report/report.js');
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 3 });
+    const csv = toInventoryCsv(store.getSession(ses.id), store.listArtifacts(ses.id));
+    const lines = csv.trim().split('\r\n');
+    assert.strictEqual(lines[0], 'artifact,verb,area,point,value,type');
+    assert.ok(lines.some((l) => l.includes('holding:0') && l.includes(',1000,')));
+    assert.strictEqual(lines.length, 4); // header + 3 registers
+  });
 
   sim.server.close();
 

@@ -13,7 +13,7 @@ import { DriverRegistry } from './src/drivers/index.js';
 import { EvidenceStore } from './src/evidence/store.js';
 import { RulesEngine } from './src/rules/engine.js';
 import { Orchestrator } from './src/orchestrator/orchestrator.js';
-import { renderSessionReport } from './src/report/report.js';
+import { renderSessionReport, toInventoryCsv } from './src/report/report.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5100;
@@ -148,6 +148,16 @@ app.get('/api/sessions/:id/report', (req, res) => {
   });
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(html);
+});
+
+// Point/object inventory as CSV — the commissioning point-list export.
+app.get('/api/sessions/:id/inventory.csv', (req, res) => {
+  const session = store.getSession(req.params.id);
+  if (!session) return res.status(404).json({ error: 'unknown session' });
+  const csv = toInventoryCsv(session, store.listArtifacts(req.params.id));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="fieldscope-inventory-${req.params.id}.csv"`);
+  res.send(csv);
 });
 
 // ---- static client (production) --------------------------------------------

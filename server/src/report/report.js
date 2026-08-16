@@ -41,6 +41,27 @@ function resultSummary(result) {
   return json.length > 2000 ? `${json.slice(0, 2000)}\n… (truncated)` : json;
 }
 
+// Export the session's enumerated points/objects (every browse/read that
+// produced a `result.tree`) as CSV — the point-list a commissioning engineer
+// imports into an asset database or spreadsheet.
+export function toInventoryCsv(session, artifacts) {
+  const cell = (s) => {
+    const t = String(s ?? '');
+    return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const rows = [['artifact', 'verb', 'area', 'point', 'value', 'type']];
+  for (const a of artifacts || []) {
+    const tree = a.result?.tree;
+    if (!Array.isArray(tree)) continue;
+    for (const area of tree) {
+      for (const p of area.points || []) {
+        rows.push([`#${a.seq}`, a.verb, area.area, p.ref, p.value, p.type ?? '']);
+      }
+    }
+  }
+  return rows.map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
+}
+
 export function renderSessionReport({ session, artifacts, audit, generatedAt = Date.now() }) {
   if (!session) throw new Error('unknown session');
 
