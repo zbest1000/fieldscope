@@ -22,16 +22,34 @@ export const manifest = {
   mode: 'full',
   lib: '🟢 raw encapsulation',
   describe:
-    'Identity object decode: vendor/product/revision/serial, status-word fault bits, device state. Session registration check.',
-  verbs: ['connect', 'identify', 'monitor', 'diagnose'],
+    'Identity object decode: vendor/product/revision/serial, status-word fault bits, device state. Session registration; CIP Get_Attribute_Single reads.',
+  verbs: ['connect', 'identify', 'read', 'monitor', 'diagnose'],
+  params: {
+    // CIP Get_Attribute_Single: read one attribute of a class/instance. Defaults
+    // read Identity (class 1) attribute 7 = product name.
+    read: {
+      class: { type: 'number', default: 1, min: 0, max: 65535 },
+      instance: { type: 'number', default: 1, min: 0, max: 65535 },
+      attribute: { type: 'number', default: 7, min: 0, max: 65535 },
+      timeout: { type: 'number', default: 3000, min: 500, max: 10000 },
+    },
+  },
 };
 
 // Encapsulation commands (CIP Vol 2, ch. 2).
 const CMD = {
   LIST_SERVICES: 0x0004,
   LIST_IDENTITY: 0x0063,
+  SEND_RR_DATA: 0x006f,
   REGISTER_SESSION: 0x0065,
   UNREGISTER_SESSION: 0x0066,
+};
+
+// CIP general status codes (Vol 1, Appendix B — the common ones).
+const CIP_STATUS = {
+  0x00: 'success', 0x04: 'path segment error', 0x05: 'path destination unknown',
+  0x08: 'service not supported', 0x09: 'invalid attribute value', 0x0e: 'attribute not settable',
+  0x13: 'not enough data', 0x14: 'attribute not supported', 0x15: 'too much data',
 };
 
 const ENCAP_STATUS_TEXT = {
@@ -173,6 +191,89 @@ function decodeStatus(status) {
   };
 }
 
+const u16le = (n) => { const b = Buffer.alloc(2); b.writeUInt16LE(n & 0xffff, 0); return b; };
+function taggedErr(code, message) { const e = new Error(message); e.code = code; return e; }
+
+// CIP Get_Attribute_Single (service 0x0E) request over a logical EPATH:
+// class(0x20)/instance(0x24)/attribute(0x30), each an 8-bit logical segment.
+function buildGetAttributeSingle(cls, inst, attr) {
+  const path = Buffer.from([0x20, cls & 0xff, 0x24, inst & 0xff, 0x30, attr & 0xff]);
+  return Buffer.concat([Buffer.from([0x0e, path.length / 2]), path]); // service, path size (words)
+}
+
+// Wrap a CIP request in a SendRRData encapsulation: interface handle + timeout +
+// CPF (null address item + unconnected data item).
+function buildSendRRData(sessionHandle, cipRequest) {
+  const cpf = Buffer.concat([
+    u16le(2), // item count
+    Buffer.from([0x00, 0x00, 0x00, 0x00]), // null address item (type 0, len 0)
+    u16le(0x00b2), u16le(cipRequest.length), cipRequest, // unconnected data item
+  ]);
+  return encapFrame(CMD.SEND_RR_DATA, Buffer.concat([Buffer.alloc(6), cpf]), sessionHandle);
+}
+
+// Pull the CIP message out of a SendRRData reply's CPF (unconnected data item).
+function extractCipItem(data) {
+  let o = 6; // skip interface handle(4) + timeout(2)
+  if (o + 2 > data.length) return null;
+  const itemCount = data.readUInt16LE(o); o += 2;
+  for (let i = 0; i < itemCount && o + 4 <= data.length; i++) {
+    const type = data.readUInt16LE(o);
+    const len = data.readUInt16LE(o + 2);
+    const body = data.subarray(o + 4, o + 4 + len);
+    o += 4 + len;
+    if (type === 0x00b2) return body;
+  }
+  return null;
+}
+
+function parseCipResponse(cip) {
+  if (!cip || cip.length < 4) return { error: 'short-cip-response' };
+  const general = cip[2];
+  const addSize = cip[3];
+  return {
+    reply_service: cip[0],
+    general_status: general,
+    status_text: CIP_STATUS[general] || `0x${general.toString(16)}`,
+    data: cip.subarray(4 + addSize * 2),
+  };
+}
+
+const VENDOR_LOOKUP = (id) => VENDOR_TEXT[id] || `vendor ${id}`;
+const DEVTYPE_LOOKUP = (t) => DEVICE_TYPE_TEXT[t] || `type 0x${t.toString(16)}`;
+
+// Interpret an Identity-object (class 1) attribute payload by attribute number.
+function decodeIdentityAttribute(attr, data) {
+  switch (attr) {
+    case 1: return { vendor_id: data.readUInt16LE(0), vendor: VENDOR_LOOKUP(data.readUInt16LE(0)) };
+    case 2: return { device_type: data.readUInt16LE(0), device_type_name: DEVTYPE_LOOKUP(data.readUInt16LE(0)) };
+    case 3: return { product_code: data.readUInt16LE(0) };
+    case 4: return { revision: `${data[0]}.${data[1]}` };
+    case 5: return { status: data.readUInt16LE(0), status_bits: decodeStatus(data.readUInt16LE(0)) };
+    case 6: return { serial_number: data.readUInt32LE(0).toString(16).padStart(8, '0') };
+    case 7: return { product_name: data.subarray(1, 1 + data[0]).toString('latin1') };
+    default: return { bytes: data.toString('hex') };
+  }
+}
+
+// Open a socket, RegisterSession, run fn(socket, handle), then close. The CIP
+// session handle is bound to this TCP connection, so register + request share it.
+async function withSession(ctx, fn) {
+  const timeout = ctx.params?.timeout ?? 3000;
+  const { socket, connectMs } = await tcpConnect(ctx.host, ctx.port || 44818, timeout);
+  try {
+    const regData = Buffer.alloc(4); regData.writeUInt16LE(1, 0);
+    const { data: regResp } = await tcpRequest(socket, encapFrame(CMD.REGISTER_SESSION, regData), { timeout, isComplete: encapComplete });
+    const regHeader = parseEncapHeader(regResp);
+    if (regHeader.error || regHeader.status !== 0 || !regHeader.session_handle) {
+      throw taggedErr('EPROTO', `RegisterSession failed (${regHeader.status_text || regHeader.error})`);
+    }
+    return await fn(socket, regHeader.session_handle, timeout, connectMs);
+  } finally {
+    socket.destroy();
+  }
+}
+
 async function transact(host, port, request, timeout) {
   const { socket, connectMs } = await tcpConnect(host, port, timeout);
   try {
@@ -305,6 +406,48 @@ export const verbs = {
           result: { identity: null, error: err.code || err.message },
           error: err,
         }),
+        facts: errorFacts(err),
+      };
+    }
+  },
+
+  // Read = CIP Get_Attribute_Single on a class/instance/attribute. Registers a
+  // session, sends the request, and decodes the attribute (Identity attrs by
+  // number; other classes returned as raw bytes).
+  async read(ctx) {
+    const cls = ctx.params?.class ?? 1;
+    const inst = ctx.params?.instance ?? 1;
+    const attr = ctx.params?.attribute ?? 7;
+    try {
+      const out = await withSession(ctx, async (socket, handle, timeout) => {
+        const req = buildSendRRData(handle, buildGetAttributeSingle(cls, inst, attr));
+        const { data: resp, rttMs } = await tcpRequest(socket, req, { timeout, isComplete: encapComplete });
+        const header = parseEncapHeader(resp);
+        const cip = header.error ? { error: header.error } : parseCipResponse(extractCipItem(header.data));
+        return { req, resp, cip, rttMs };
+      });
+      const cip = out.cip;
+      const ok = cip && !cip.error && cip.general_status === 0;
+      const decoded = ok ? (cls === 1 ? decodeIdentityAttribute(attr, cip.data) : { bytes: cip.data.toString('hex') }) : {};
+      return {
+        artifact: makeArtifact({
+          verb: 'read',
+          raw: bytesRaw(out.req, out.resp),
+          decode: cip,
+          result: {
+            class: cls,
+            instance: inst,
+            attribute: attr,
+            status: cip?.status_text ?? 'no response',
+            ...decoded,
+            rtt_ms: out.rttMs,
+          },
+        }),
+        facts: { transport: { tcp_connect: 'success' }, cip: { status: cip?.general_status ?? null } },
+      };
+    } catch (err) {
+      return {
+        artifact: makeArtifact({ verb: 'read', raw: `error: ${err.code || err.message}`, result: { error: err.code || err.message }, error: err }),
         facts: errorFacts(err),
       };
     }

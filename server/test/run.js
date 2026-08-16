@@ -279,6 +279,23 @@ async function main() {
     assert.strictEqual(art.result.registered, true);
     assert.ok(art.result.session_handle);
   });
+  await test('read fetches a CIP Identity attribute via Get_Attribute_Single', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    // Attribute 7 = product name.
+    const name = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 7 });
+    assert.strictEqual(name.result.status, 'success');
+    assert.strictEqual(name.result.product_name, 'Fieldscope Sim PLC');
+    // Attribute 4 = revision.
+    const rev = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 4 });
+    assert.strictEqual(rev.result.revision, '2.7');
+  });
+  await test('reading an unsupported attribute returns the CIP status', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 99 });
+    assert.strictEqual(art.result.status, 'attribute not supported');
+  });
   await test('operational device diagnoses healthy', async () => {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });

@@ -88,8 +88,11 @@ double-gate with read-back. **Diagnose** decodes exception codes; the flagship
 is a gateway whose downstream RTU is dead (exception 0x0B) vs a healthy slave.
 
 ### EtherNet/IP + CIP · `ethernet-ip.js` · 44818
-CIP Identity object via List Identity. Decodes the **status word + device
-state**. Flagship verdict: a drive reporting a Major Unrecoverable Fault.
+CIP Identity object via List Identity (`identify`), decoding the **status word +
+device state**. `read` registers a session and runs **CIP Get_Attribute_Single**
+on a class / instance / attribute (Identity attributes decoded by number; other
+classes returned raw), reporting the CIP general status. Flagship verdict: a
+drive reporting a Major Unrecoverable Fault.
 
 ### S7comm · `s7comm.js` · 102
 ISO-on-TCP (TPKT / COTP) connect at a specific **rack/slot**, then an SZL read
