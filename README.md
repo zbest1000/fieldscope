@@ -31,6 +31,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **Commissioning report export** (self-contained HTML, findings-first, credential redaction, §12.8) | ✅ `server/src/report` |
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
+| **Discovery** | **IP Scanner** (nmap-style host sweep, port scan, service ID) · **DHCP/BOOTP** (DISCOVER + option decode, rogue-server detection) · **PROFINET DCP** (PRONETA-style Identify-All device discovery) |
 | **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write) · **EtherNet/IP + CIP** (identity/status-word verdicts) · **S7comm** (rack/slot COTP + SZL identity) · **BACnet/IP** (Who-Is/I-Am + system-status) · **DNP3** (link-status + IIN-flag verdicts) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection) · **OPC UA** (UACP handshake + error decode) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
@@ -64,6 +65,8 @@ The `simlab` container serves, at hostname `simlab` from inside the stack:
 | DNP3 | 20000 | outstation `1024`, IIN clean |
 | DNP3 | 20001 | outstation `1025` with the device-restart IIN bit set |
 | S7comm | 1102 | S7-300 (`6ES7 315`, rack 0 / slot 2 — refuses the wrong rack/slot) |
+| DHCP | 6767/udp | DHCP server offering `10.10.0.50` (point the `dhcp` driver: `server=127.0.0.1`, `server_port=6767`) |
+| PROFINET DCP | 34964/udp | DCP responder with `plc-line3` + `io-station-1` (point the `profinet-dcp` driver: `responder_port=34964`) |
 | Sparkplug B | (via mqtt 1883) | edge node `Plant1/Line3` birthing + streaming with periodic rebirth |
 | OPC UA | 4840 | server completing the UACP Hello/Acknowledge handshake |
 
@@ -110,7 +113,7 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 56 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 68 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 
@@ -136,6 +139,7 @@ The full design spec is [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Section 
 - **§4.1 Write double-gate** → `orchestrator/orchestrator.js` (`arm` / `prepareWrite` / `confirmWrite`) + `client/.../TopBar.jsx`, `WritePanel`.
 - **§5 Diagnose rules** → `rules/engine.js` + `server/rulepacks/*.yaml`.
 - **§6.1 / 6.2 / 6.3 / 6.4 protocol catalog** → `drivers/snmp.js` (per-port error counters = the flaky-cable detector), `drivers/ethernet-ip.js` (CIP Identity status word + state verdicts), `drivers/s7comm.js` (ISO-on-TCP/COTP rack-slot check + SZL order number/firmware), `drivers/bacnet.js` (Who-Is/I-Am + device system-status), `drivers/dnp3.js` (link-status addressing check + IIN-flag verdicts, wire-correct CRC), `drivers/mqtt.js` (CONNACK verdicts; publish as an ARM-gated write), `drivers/sparkplug.js` (birth/death lifecycle + per-node sequence-gap detection with a dependency-free protobuf codec), `drivers/opcua.js` (OPC UA UACP Hello/Acknowledge handshake + decoded protocol-error StatusCodes).
+- **§7 Discovery tier** → `drivers/ipscan.js` (nmap-style host sweep + port scan + service ID, concurrency-pooled and bounded), `drivers/dhcp.js` (DHCP DISCOVER + BOOTP/option decode + rogue-server detection), `drivers/profinet-dcp.js` (PRONETA-style DCP Identify-All device discovery with duplicate-name / unconfigured-IP commissioning verdicts; the DCP codec runs over a UDP test harness — real DCP is raw Ethernet, declared `requires_l2`).
 - **§7 UI structure** → `client/src/components/*` (one repeated workspace, capability-driven tabs, Diagnose/Monitor/Raw).
 - **§7 Evidence & reporting / §12.8** → `report/report.js` (findings-first HTML commissioning report with credential redaction, exported per session from the Evidence view).
 - **§9 Evidence data model** → `evidence/store.js` (Target / Session / Artifact / Verdict / Audit; replay + diff).

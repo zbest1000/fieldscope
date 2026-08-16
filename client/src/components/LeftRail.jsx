@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store.js';
 import { Icon, Input } from './ui.jsx';
 
@@ -23,12 +23,26 @@ const DOMAIN_DOT = {
   'iot-rf': 'bg-d-rf',
 };
 
+const COLLAPSE_KEY = 'fieldscope.railCollapsed';
+
 export default function LeftRail({ view, setView }) {
   const { grouped, activeDriverId, selectDriver, session } = useStore();
   const [q, setQ] = useState('');
-  const [collapsed, setCollapsed] = useState({});
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(COLLAPSE_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify(collapsed));
+    } catch { /* storage blocked */ }
+  }, [collapsed]);
 
   const query = q.trim().toLowerCase();
+  const filtering = query.length > 0;
   const filtered = useMemo(() => {
     const out = {};
     for (const g of GROUP_ORDER) {
@@ -40,6 +54,12 @@ export default function LeftRail({ view, setView }) {
     return out;
   }, [grouped, query]);
   const groups = Object.keys(filtered);
+  const allCollapsed = groups.length > 0 && groups.every((g) => collapsed[g]);
+  const toggleAll = () => {
+    const next = {};
+    if (!allCollapsed) for (const g of GROUP_ORDER) next[g] = true;
+    setCollapsed(next);
+  };
 
   return (
     <div className="w-64 shrink-0 border-r border-edge bg-panel2 flex flex-col text-sm">
@@ -48,8 +68,8 @@ export default function LeftRail({ view, setView }) {
         <NavItem icon="file" label="Evidence" active={view === 'evidence'} onClick={() => setView('evidence')} />
       </div>
 
-      <div className="p-2 border-b border-edge">
-        <div className="relative">
+      <div className="p-2 border-b border-edge flex items-center gap-1.5">
+        <div className="relative flex-1">
           <Icon name="search" size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-600" />
           <Input
             value={q}
@@ -58,12 +78,19 @@ export default function LeftRail({ view, setView }) {
             className="w-full pl-8 py-1.5"
           />
         </div>
+        <button
+          onClick={toggleAll}
+          title={allCollapsed ? 'Expand all categories' : 'Collapse all categories'}
+          className="shrink-0 grid place-items-center h-8 w-8 rounded-md border border-edge text-slate-500 hover:text-slate-200 hover:bg-white/5"
+        >
+          <Icon name="chevron" size={15} className={`transition-transform ${allCollapsed ? '-rotate-90' : ''}`} />
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">
         {groups.length === 0 && <div className="px-3 py-6 text-center text-xs text-slate-600">No protocol matches “{q}”.</div>}
         {groups.map((g) => {
-          const isCollapsed = collapsed[g];
+          const isCollapsed = collapsed[g] && !filtering; // filtering forces-expand matches
           return (
             <div key={g} className="mb-1">
               <button

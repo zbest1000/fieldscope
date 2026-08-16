@@ -1,0 +1,65 @@
+# IP Scanner rulepack (§5, §6.1). Turns a port scan into a posture verdict:
+# is the host even up, and — the OT-relevant part — what is exposed.
+
+rulepack: ipscan
+rules:
+  - id: host-down
+    when:
+      host.up: false
+    verdict:
+      severity: warn
+      title: "Host appears down or fully filtered"
+      detail: >
+        No probed port answered — every connection timed out with none refused.
+        The host is off, unplugged, on a different subnet, or a firewall silently
+        drops everything to it. (A live-but-closed host refuses at least one port.)
+      next_steps:
+        - "Confirm the IP and that you are on the same VLAN/subnet"
+        - "Try an ARP or ICMP check — a host can drop TCP yet still ARP-reply"
+
+  - id: ot-and-remote
+    when:
+      scan.ot_open: { nonempty: true }
+      scan.remote_open: { nonempty: true }
+    continue: true
+    verdict:
+      severity: warn
+      title: "Industrial services AND interactive remote access are both exposed"
+      detail: >
+        The host exposes OT/ICS protocol ports and an interactive remote-access
+        service (SSH/Telnet/RDP/VNC). That combination is the classic pivot path
+        onto a control network — worth confirming it is intended and segmented.
+
+  - id: remote-access-exposed
+    when:
+      scan.remote_open: { nonempty: true }
+    verdict:
+      severity: warn
+      title: "Interactive remote access is exposed"
+      detail: >
+        An SSH / Telnet / RDP / VNC port is open. Telnet and VNC especially are
+        often unauthenticated or weakly authenticated on plant equipment.
+      next_steps:
+        - "Verify the service is intended and access-controlled"
+        - "Prefer SSH over Telnet; restrict RDP/VNC to a jump host"
+
+  - id: ot-exposed
+    when:
+      scan.ot_open: { nonempty: true }
+    verdict:
+      severity: info
+      title: "Industrial control services reachable"
+      detail: >
+        One or more OT/ICS protocol ports answered (see the open-port list). On a
+        properly segmented network these should only be reachable from the cell
+        that owns them — useful to confirm the segmentation is as designed.
+
+  - id: services-open
+    when:
+      host.up: true
+    verdict:
+      severity: ok
+      title: "Host up — scan complete"
+      detail: >
+        The host is reachable and the common-port scan finished. See the open-port
+        list for the services it exposes.

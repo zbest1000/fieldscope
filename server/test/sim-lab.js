@@ -16,6 +16,11 @@
 //   sparkplug          a Sparkplug B edge node publishing to the :1883 broker
 //                      (group Plant1 / node Line3; use the mqtt :1883 target)
 //   opcua        :4840   OPC UA server (UACP Hello/Ack handshake)
+//   dhcp         :6767/udp  DHCP server (single OFFER) — point the dhcp driver's
+//                          server=127.0.0.1 server_port=6767
+//   profinet-dcp :34964/udp DCP responder (2 devices) — point the profinet-dcp
+//                          driver's responder_port=34964
+//   (ipscan needs no sim — point it at 127.0.0.1 and scan the ports above)
 
 import { startModbusSim } from './modbus-sim.js';
 import { startEipSim } from './eip-sim.js';
@@ -26,6 +31,8 @@ import { startDnp3Sim } from './dnp3-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
+import { startDhcpSim } from './dhcp-sim.js';
+import { startProfinetDcpSim } from './profinet-dcp-sim.js';
 
 const services = [];
 
@@ -71,6 +78,8 @@ await up('sparkplug edge node', '→ mqtt :1883 (Plant1/Line3, periodic rebirth)
   return { close: () => node.stop() };
 });
 await up('opcua server', ':4840   (UACP Hello/Ack handshake)', () => startOpcuaSim({ port: 4840 }));
+await up('dhcp server', ':6767/udp (offers 10.10.0.50, single server)', () => startDhcpSim({ port: 6767 }));
+await up('profinet-dcp responder', ':34964/udp (plc-line3 + io-station-1)', () => startProfinetDcpSim({ port: 34964 }));
 
 console.log(`[sim-lab] ${services.length} simulators up — Ctrl-C to stop`);
 

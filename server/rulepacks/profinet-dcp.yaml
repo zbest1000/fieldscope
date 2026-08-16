@@ -1,0 +1,65 @@
+# PROFINET DCP rulepack (§5, §6.2). The two findings that dominate PROFINET
+# commissioning: a device with a name but no IP (never assigned), and two
+# devices sharing a station name (only one can come online).
+
+rulepack: profinet-dcp
+rules:
+  - id: no-devices
+    when:
+      transport.dcp: ok
+      dcp.count: 0
+    verdict:
+      severity: warn
+      title: "No PROFINET devices answered Identify-All"
+      detail: >
+        The DCP Identify-All drew no response. On a real network DCP is Layer-2
+        (raw Ethernet, EtherType 0x8892) and only reaches devices in the same
+        broadcast domain — you need a raw/mirror adapter and to be on the PROFINET
+        segment. If you are, the segment may simply have no PROFINET devices, or
+        they are behind a router (DCP does not cross one).
+      next_steps:
+        - "Attach to the PROFINET segment via a mirror/SPAN port or direct link"
+        - "Confirm the capture adapter allows raw Ethernet (admin / Npcap)"
+
+  - id: duplicate-name
+    when:
+      transport.dcp: ok
+      dcp.duplicate_names: { nonempty: true }
+    verdict:
+      severity: error
+      title: "Duplicate station name on the segment"
+      detail: >
+        Two or more devices report the same NameOfStation. PROFINET addresses
+        devices by name, so a duplicate means the controller cannot tell them
+        apart — typically only one comes online and the other stays in a fault
+        state. Common after cloning a spare from a configured unit.
+      next_steps:
+        - "Rename one device (DCP Set NameOfStation) to a unique station name"
+        - "Check for a spare/replacement device commissioned with the same name"
+
+  - id: unconfigured-ip
+    when:
+      transport.dcp: ok
+      dcp.unconfigured: { nonempty: true }
+    verdict:
+      severity: warn
+      title: "Device has a name but no IP (0.0.0.0)"
+      detail: >
+        One or more devices report IP 0.0.0.0 — they have a station name but no
+        address. That is the normal state of a freshly-installed device: the
+        controller assigns the IP by name at connection setup (DCP Set), or it
+        never got configured. It will not communicate over IP until addressed.
+      next_steps:
+        - "Confirm the controller is configured to assign this device's IP by name"
+        - "Or assign a static IP with DCP Set IPParameter during commissioning"
+
+  - id: devices-found
+    when:
+      transport.dcp: ok
+      dcp.count: { gt: 0 }
+    verdict:
+      severity: ok
+      title: "PROFINET devices discovered"
+      detail: >
+        Identify-All returned device records — see the station name, IP, vendor,
+        and role for each. All addressed and uniquely named.

@@ -84,8 +84,9 @@ export function GenericVerb({ driver, verb }) {
 }
 
 function ResultView({ verb, result }) {
-  // Browse renders a point tree; everything else a compact card + JSON.
-  if (verb === 'browse' && result.tree) {
+  // Any result carrying a `tree` (browse, or scan/discovery verbs) renders as a
+  // grouped table; everything else a JSON card.
+  if (result.tree) {
     return (
       <div className="space-y-3">
         {result.tree.map((area, i) => (

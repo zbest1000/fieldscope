@@ -21,6 +21,9 @@ import { startDnp3Sim } from './dnp3-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
+import { startDhcpSim } from './dhcp-sim.js';
+import { startProfinetDcpSim } from './profinet-dcp-sim.js';
+import net from 'node:net';
 
 let passed = 0;
 let failed = 0;
@@ -94,6 +97,14 @@ async function main() {
     const { rules } = makeStack();
     const v = rules.evaluate('icmp', { reachable: true, loss_pct: 40 });
     assert.strictEqual(v[0].rule_id, 'high-loss');
+  });
+  await test('nonempty operator distinguishes [] from populated arrays', () => {
+    const { rules } = makeStack();
+    // Empty arrays must NOT trigger duplicate-name; populated ones must.
+    const clean = rules.evaluate('profinet-dcp', { transport: { dcp: 'ok' }, dcp: { count: 2, duplicate_names: [], unconfigured: [] } });
+    assert.strictEqual(clean[0].rule_id, 'devices-found');
+    const dup = rules.evaluate('profinet-dcp', { transport: { dcp: 'ok' }, dcp: { count: 2, duplicate_names: ['x'], unconfigured: [] } });
+    assert.strictEqual(dup[0].rule_id, 'duplicate-name');
   });
 
   // ---- evidence store ----
@@ -568,6 +579,125 @@ async function main() {
     badSim.server.close();
   });
   uaSim.server.close();
+
+  // ---- IP Scanner (nmap-style) ----
+  console.log('ip scanner (discovery)');
+  // Two ad-hoc TCP services on ephemeral ports: one open, plus a known-closed one.
+  const svcA = net.createServer((s) => s.on('error', () => {}));
+  const svcB = net.createServer((s) => s.on('error', () => {}));
+  await new Promise((r) => svcA.listen(0, '127.0.0.1', r));
+  await new Promise((r) => svcB.listen(0, '127.0.0.1', r));
+  const pA = svcA.address().port;
+  const pB = svcB.address().port;
+  await test('connect reports an open port', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { port: pA, timeout: 800 });
+    assert.strictEqual(art.result.state, 'open');
+  });
+  await test('browse scans a range and finds the open ports', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const lo = Math.min(pA, pB);
+    const hi = Math.max(pA, pB);
+    const art = await orchestrator.runVerb(ses.id, 'browse', { start: lo, end: hi, timeout: 300 });
+    const refs = art.result.tree[0].points.map((p) => p.ref);
+    assert.ok(refs.includes(`${pA}/tcp`) && refs.includes(`${pB}/tcp`));
+  });
+  await test('a refused port reads as closed and host as up', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    // Bind then immediately close so the port is refused (host still up).
+    const tmp = net.createServer();
+    const closedPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const art = await orchestrator.runVerb(ses.id, 'connect', { port: closedPort, timeout: 800 });
+    assert.strictEqual(art.result.state, 'closed');
+  });
+  await test('CIDR sweep finds the loopback host up', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'read', { cidr: '127.0.0.1/32', port: pA, timeout: 500 });
+    assert.strictEqual(art.result.hosts_up, 1);
+  });
+  svcA.close();
+  svcB.close();
+
+  // ---- DHCP / BOOTP ----
+  console.log('dhcp / bootp (discovery)');
+  const dhcpSim = await startDhcpSim({});
+  await test('identify decodes a DHCP OFFER (ip, subnet, router, lease)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 });
+    assert.strictEqual(art.result.first_offer.your_ip, '10.10.0.50');
+    assert.strictEqual(art.result.first_offer.options.subnet_mask, '255.255.255.0');
+    assert.strictEqual(art.result.first_offer.options.lease_seconds, 86400);
+  });
+  await test('single server diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('two servers answering produces the rogue-server verdict', async () => {
+    const rogueSim = await startDhcpSim({
+      offers: [
+        { yourIp: '10.10.0.50', serverId: '10.10.0.1', subnet: '255.255.255.0', router: '10.10.0.1', dns: '10.10.0.1', lease: 86400 },
+        { yourIp: '192.168.1.77', serverId: '192.168.1.1', subnet: '255.255.255.0', router: '192.168.1.1', dns: '8.8.8.8', lease: 600 },
+      ],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { server: '127.0.0.1', server_port: rogueSim.port, client_port: 0, window_ms: 1000 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'rogue-server');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    rogueSim.close();
+  });
+  dhcpSim.close();
+
+  // ---- PROFINET DCP (PRONETA-style) ----
+  console.log('profinet-dcp (discovery)');
+  const dcpSim = await startProfinetDcpSim({});
+  await test('identify decodes device station name / IP / vendor / role', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    assert.strictEqual(art.result.devices, 2);
+    const plc = art.decode.find((d) => d.name_of_station === 'plc-line3');
+    assert.strictEqual(plc.ip, '192.168.0.10');
+    assert.strictEqual(plc.role, 'IO-Controller');
+  });
+  await test('healthy segment diagnoses devices-found', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'devices-found');
+  });
+  await test('duplicate station name produces the error verdict', async () => {
+    const dupSim = await startProfinetDcpSim({
+      devices: [
+        { name: 'io-station-1', ip: '192.168.0.20', vendor: 'Siemens, ET200SP', role: 0x01 },
+        { name: 'io-station-1', ip: '192.168.0.21', vendor: 'Siemens, ET200SP', role: 0x01 },
+      ],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: dupSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'duplicate-name');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    dupSim.close();
+  });
+  await test('unconfigured IP (0.0.0.0) produces the commissioning verdict', async () => {
+    const newSim = await startProfinetDcpSim({
+      devices: [{ name: 'fresh-device', ip: '0.0.0.0', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: newSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unconfigured-ip');
+    newSim.close();
+  });
+  dcpSim.close();
 
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');

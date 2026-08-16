@@ -84,6 +84,12 @@ function matchValue(actual, expected) {
   // { exists: true|false }, { any: [...] }.
   if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
     if ('exists' in expected) return expected.exists ? actual !== undefined && actual !== null : actual === undefined || actual === null;
+    // `nonempty` distinguishes a present-but-empty array/string from a populated
+    // one — `exists` alone treats [] as present, which is rarely intended.
+    if ('nonempty' in expected) {
+      const populated = (Array.isArray(actual) && actual.length > 0) || (typeof actual === 'string' && actual.length > 0);
+      return expected.nonempty ? populated : !populated;
+    }
     if ('gt' in expected) return num(actual) > expected.gt;
     if ('gte' in expected) return num(actual) >= expected.gte;
     if ('lt' in expected) return num(actual) < expected.lt;

@@ -1,0 +1,44 @@
+# DHCP rulepack (§5, §6.1). The signature fault: more than one server answering
+# a single DISCOVER — a rogue or mis-scoped DHCP server handing out addresses.
+
+rulepack: dhcp
+rules:
+  - id: no-offer
+    when:
+      dhcp.offers: 0
+    verdict:
+      severity: warn
+      title: "No DHCP OFFER received"
+      detail: >
+        The DISCOVER drew no reply in the window. Either no DHCP server serves
+        this segment, the request did not reach one (no relay/BBMD across the
+        router, or a broadcast that never left the host), or the server is down.
+        Static-only segments legitimately look like this.
+      next_steps:
+        - "Confirm a DHCP server or relay (ip helper-address) serves this VLAN"
+        - "On a real segment, broadcast discovery needs UDP/68 (root) — try a unicast to a known server"
+
+  - id: rogue-server
+    when:
+      dhcp.servers: { gt: 1 }
+    verdict:
+      severity: error
+      title: "Multiple DHCP servers answered — possible rogue server"
+      detail: >
+        More than one server responded to a single DISCOVER. Two DHCP servers on
+        one broadcast domain race to answer, so devices get addresses, gateways,
+        and DNS from whichever wins — intermittently. On a plant network this is
+        a classic cause of devices that "sometimes" get the wrong IP or gateway.
+      next_steps:
+        - "Identify each server_id in the offer list and confirm which is authorized"
+        - "Track down the rogue (often an unmanaged switch/router or a misconfigured PLC/gateway) and disable its DHCP"
+
+  - id: healthy
+    when:
+      dhcp.offers: { gt: 0 }
+    verdict:
+      severity: ok
+      title: "DHCP responding — single server"
+      detail: >
+        One server answered with an address offer. See the decoded offer for the
+        subnet, gateway, DNS, lease time, and server identifier.
