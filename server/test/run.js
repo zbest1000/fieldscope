@@ -213,6 +213,28 @@ async function main() {
     const audit = store.listAudit();
     assert.ok(audit.some((a) => a.action === 'modbus-write'));
   });
+  await test('a float32 setpoint writes two registers via FC16 and read-back verifies', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 10, value: 50.25, format: 'float32', word_order: 'big' });
+    assert.strictEqual(prep.proposed_value, 50.25);
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.format, 'float32');
+    assert.ok(Math.abs(Number(art.result.read_back) - 50.25) < 0.01, `read-back ${art.result.read_back}`);
+    assert.strictEqual(art.result.verified, true);
+    // Reading the same block back as float32 sees the setpoint.
+    const rb = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 10, count: 2, format: 'float32' });
+    assert.ok(Math.abs(rb.result.values[0] - 50.25) < 0.01);
+  });
+  await test('encodeRegisters ∘ interpretRegisters round-trips (int32, word order)', async () => {
+    const { encodeRegisters, interpretRegisters } = await import('../src/drivers/modbus.js');
+    for (const wo of ['big', 'little']) {
+      const regs = encodeRegisters(-123456, 'int32', wo);
+      assert.strictEqual(interpretRegisters(regs, 'int32', wo)[0], -123456);
+    }
+  });
   await test('a confirmation token is one-time', async () => {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port });

@@ -57,6 +57,15 @@ export function startModbusSim({ port = 0, exception = null, unitId = 1 } = {}) 
         const val = buf.readUInt16BE(10);
         coils[addr] = val === 0xff00 ? 1 : 0;
         reply(buf.subarray(7));
+      } else if (fc === 0x10) {
+        // Write Multiple Registers: fc, addr(2), quantity(2), byteCount(1), data.
+        const addr = buf.readUInt16BE(8);
+        const quantity = buf.readUInt16BE(10);
+        for (let i = 0; i < quantity; i++) holding[addr + i] = buf.readUInt16BE(13 + i * 2);
+        const body = Buffer.alloc(4);
+        body.writeUInt16BE(addr, 0);
+        body.writeUInt16BE(quantity, 2);
+        reply(Buffer.concat([Buffer.from([0x10]), body])); // echo fc, addr, quantity
       } else {
         reply(Buffer.from([fc | 0x80, 0x01]));
       }

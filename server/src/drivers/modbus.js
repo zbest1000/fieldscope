@@ -41,6 +41,11 @@ export const manifest = {
       area: { type: 'enum', options: ['holding', 'coil'], default: 'holding' },
       address: { type: 'number', default: 0, min: 0, max: 65535 },
       value: { type: 'number', default: 0 },
+      // 32-bit formats encode `value` into two registers and write them with
+      // FC16 (Write Multiple Registers) — e.g. a float setpoint. word_order
+      // must match the device (ABCD high-first vs CDAB low-first).
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32'], default: 'uint16' },
+      word_order: { type: 'enum', options: ['big', 'little'], default: 'big' },
     },
   },
 };
@@ -52,6 +57,7 @@ const FC = {
   READ_INPUT: 0x04,
   WRITE_COIL: 0x05,
   WRITE_REGISTER: 0x06,
+  WRITE_MULTIPLE: 0x10,
 };
 
 const EXCEPTION_TEXT = {
@@ -164,6 +170,30 @@ export function interpretRegisters(regs, format = 'uint16', wordOrder = 'big') {
     else if (format === 'float32') { const b = Buffer.alloc(4); b.writeUInt32BE(u32, 0); out.push(round(b.readFloatBE(0))); }
   }
   return out;
+}
+
+// Encode a value into the uint16 registers that carry it. 32-bit formats span
+// two registers, ordered per word_order. Inverse of interpretRegisters.
+export function encodeRegisters(value, format = 'uint16', wordOrder = 'big') {
+  if (format === 'uint16' || format === 'int16') return [value & 0xffff];
+  const b = Buffer.alloc(4);
+  if (format === 'float32') b.writeFloatBE(value, 0);
+  else if (format === 'int32') b.writeInt32BE(value | 0, 0);
+  else b.writeUInt32BE(value >>> 0, 0);
+  const hi = b.readUInt16BE(0);
+  const lo = b.readUInt16BE(2);
+  return wordOrder === 'little' ? [lo, hi] : [hi, lo];
+}
+
+// FC16 Write Multiple Registers PDU.
+function writeMultiplePdu(address, regs) {
+  const pdu = Buffer.alloc(6 + regs.length * 2);
+  pdu.writeUInt8(FC.WRITE_MULTIPLE, 0);
+  pdu.writeUInt16BE(address, 1);
+  pdu.writeUInt16BE(regs.length, 3);
+  pdu.writeUInt8(regs.length * 2, 5);
+  regs.forEach((r, i) => pdu.writeUInt16BE(r & 0xffff, 6 + i * 2));
+  return pdu;
 }
 
 function decodeReadResponse(area, parsed, count, format = 'uint16', wordOrder = 'big') {
@@ -342,6 +372,28 @@ export const verbs = {
     }
   },
 
+  // Gate-2 preview: read the target's current value (with the right width and
+  // interpretation) so the confirm shows current → proposed accurately.
+  async previewWrite(ctx) {
+    const area = ctx.params?.area ?? 'holding';
+    const address = ctx.params?.address ?? 0;
+    const value = ctx.params?.value ?? 0;
+    const format = ctx.params?.format ?? 'uint16';
+    const wordOrder = ctx.params?.word_order ?? 'big';
+    const wide = area !== 'coil' && (format === 'uint32' || format === 'int32' || format === 'float32');
+    let current = null;
+    try {
+      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, wide ? 2 : 1, format, wordOrder);
+      current = rb.decoded ? rb.decoded.values[0] : null;
+    } catch { /* current unknown */ }
+    return {
+      point: `${area}:${address}${format !== 'uint16' && area !== 'coil' ? ` (${format})` : ''}`,
+      current_value: current,
+      proposed_value: value,
+      target: ctx.port ? `${ctx.host}:${ctx.port}` : ctx.host,
+    };
+  },
+
   // Write is gated. The orchestrator only calls this after ARM + per-write
   // confirm; the driver still refuses to compose the frame if not armed, so the
   // write path cannot fire silently even by mistake.
@@ -352,19 +404,30 @@ export const verbs = {
     const area = ctx.params?.area ?? 'holding';
     const address = ctx.params?.address ?? 0;
     const value = ctx.params?.value ?? 0;
+    const format = ctx.params?.format ?? 'uint16';
+    const wordOrder = ctx.params?.word_order ?? 'big';
     const timeout = ctx.params?.timeout ?? 3000;
+    const wide = area !== 'coil' && (format === 'uint32' || format === 'int32' || format === 'float32');
 
-    const pdu = Buffer.alloc(5);
+    let pdu;
+    let expectedFc;
     if (area === 'coil') {
+      pdu = Buffer.alloc(5);
       pdu.writeUInt8(FC.WRITE_COIL, 0);
       pdu.writeUInt16BE(address, 1);
       pdu.writeUInt16BE(value ? 0xff00 : 0x0000, 3);
+      expectedFc = FC.WRITE_COIL;
+    } else if (wide) {
+      // 32-bit value → two registers via FC16.
+      pdu = writeMultiplePdu(address, encodeRegisters(value, format, wordOrder));
+      expectedFc = FC.WRITE_MULTIPLE;
     } else {
+      pdu = Buffer.alloc(5);
       pdu.writeUInt8(FC.WRITE_REGISTER, 0);
       pdu.writeUInt16BE(address, 1);
       pdu.writeUInt16BE(value & 0xffff, 3);
+      expectedFc = FC.WRITE_REGISTER;
     }
-    const expectedFc = area === 'coil' ? FC.WRITE_COIL : FC.WRITE_REGISTER;
     const { request, response, rttMs } = await transact(
       ctx.host,
       ctx.port || 502,
@@ -375,20 +438,18 @@ export const verbs = {
     const parsed = parseResponse(response, expectedFc);
     const ok = !parsed.exception && parsed.function_code_echoed;
 
-    // Dry-run / preview is handled by the orchestrator before ARM; here we do a
-    // read-back verification (§4.1) so the artifact reports whether it took.
+    // Read-back verification (§4.1) so the artifact reports whether it took.
     let readBack = null;
     try {
-      const rb = await doRead(
-        { ...ctx, params: { ...ctx.params } },
-        area === 'coil' ? 'coils' : 'holding',
-        address,
-        1,
-      );
+      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, wide ? 2 : 1, format, wordOrder);
       readBack = rb.decoded ? rb.decoded.values[0] : null;
     } catch {
       readBack = null;
     }
+    const expected = area === 'coil' ? (value ? 1 : 0) : value;
+    const verified = readBack == null ? null
+      : format === 'float32' ? Math.abs(Number(readBack) - Number(expected)) < 0.01
+      : Number(readBack) === Number(expected);
 
     return {
       artifact: makeArtifact({
@@ -398,11 +459,12 @@ export const verbs = {
         result: {
           area,
           address,
+          format: area !== 'coil' ? format : undefined,
           written: value,
           ack: ok,
           exception: parsed.exception ? parsed.exception_text : null,
           read_back: readBack,
-          verified: readBack != null ? Number(readBack) === Number(area === 'coil' ? (value ? 1 : 0) : value) : null,
+          verified,
           rtt_ms: rttMs,
         },
       }),
