@@ -155,8 +155,15 @@ codec; `browse` shows the node tree with lifecycle state; `read` resolves metric
 Detects **sequence gaps and node death** per edge node.
 
 ### OPC UA · `opcua.js` · 4840
-UACP Hello / Acknowledge handshake and negotiated transport limits; decodes
-protocol-error StatusCodes. Flagship: endpoint-URL-invalid.
+UACP Hello / Acknowledge handshake and negotiated transport limits (`connect` /
+`identify`); decodes protocol-error StatusCodes. `browse` opens a
+SecurityPolicy-**None** secure channel (OpenSecureChannel) and runs
+**GetEndpoints**, enumerating every endpoint the server offers with its security
+mode (None / Sign / SignAndEncrypt), security policy (Basic256Sha256 …) and
+security level — the "which endpoint should my client use, and does it require
+certificates" question, and the entry point to a cert-chain / policy audit.
+Flagship: endpoint-URL-invalid. Full binary codec (NodeIds, ExtensionObjects,
+LocalizedText, EndpointDescription) implemented dependency-free.
 
 ---
 

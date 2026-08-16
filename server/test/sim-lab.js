@@ -16,7 +16,7 @@
 //   s7comm       :1102   S7-300 @ rack0/slot2 (refuses wrong rack/slot)
 //   sparkplug          a Sparkplug B edge node publishing to the :1883 broker
 //                      (group Plant1 / node Line3; use the mqtt :1883 target)
-//   opcua        :4840   OPC UA server (UACP Hello/Ack handshake)
+//   opcua        :4840   OPC UA server (UACP Hello/Ack + OpenSecureChannel/GetEndpoints)
 //   dns          :5354/udp  DNS zone plant.local (plc/gw, A/MX/TXT/NS) — point the
 //                          dns driver at 127.0.0.1:5354 and read a record type
 //   dhcp         :6767/udp  DHCP server (single OFFER) — point the dhcp driver's
@@ -86,7 +86,7 @@ await up('sparkplug edge node', '→ mqtt :1883 (Plant1/Line3, periodic rebirth)
   const node = startSparkplugNode({ brokerPort: 1883, group: 'Plant1', node: 'Line3', intervalMs: 200, rebirthEvery: 20 });
   return { close: () => node.stop() };
 });
-await up('opcua server', ':4840   (UACP Hello/Ack handshake)', () => startOpcuaSim({ port: 4840 }));
+await up('opcua server', ':4840   (Hello/Ack + OpenSecureChannel/GetEndpoints)', () => startOpcuaSim({ port: 4840 }));
 await up('dns server', ':5354/udp (zone plant.local: plc/gw + A/MX/TXT/NS)', () => startDnsSim({ port: 5354 }));
 await up('dhcp server', ':6767/udp (offers 10.10.0.50, single server)', () => startDhcpSim({ port: 6767 }));
 await up('profinet-dcp responder', ':34964/udp (plc-line3 + io-station-1)', () => startProfinetDcpSim({ port: 34964 }));

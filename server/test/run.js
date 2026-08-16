@@ -846,6 +846,20 @@ async function main() {
     assert.strictEqual(art.verdicts[0].severity, 'error');
     badSim.server.close();
   });
+  await test('browse opens a secure channel and enumerates GetEndpoints', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', {});
+    assert.strictEqual(art.result.endpoints, 2);
+    assert.strictEqual(art.result.secured, 1);
+    assert.strictEqual(art.result.unsecured, 1);
+    // One unsecured (None) group and one secured group, each with a policy type.
+    const areas = art.result.tree.map((a) => a.area);
+    assert.ok(areas.some((a) => a.startsWith('No security')));
+    assert.ok(areas.some((a) => a.startsWith('Secured')));
+    const policies = art.result.tree.flatMap((a) => a.points.map((p) => p.type));
+    assert.ok(policies.includes('None') && policies.includes('Basic256Sha256'));
+  });
   uaSim.server.close();
 
   // ---- IP Scanner (TCP host/port discovery) ----
