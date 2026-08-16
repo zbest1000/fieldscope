@@ -84,6 +84,8 @@ export function GenericVerb({ driver, verb }) {
 }
 
 function ResultView({ verb, result }) {
+  // A topology result (PROFINET DCP browse) renders as a device graph.
+  if (result.topology) return <TopologyView topo={result.topology} extra={result} />;
   // Any result carrying a `tree` (browse, or scan/discovery verbs) renders as a
   // grouped table; everything else a JSON card.
   if (result.tree) {
@@ -116,6 +118,90 @@ function ResultView({ verb, result }) {
     );
   }
   return <Json data={result} />;
+}
+
+// PROFINET DCP topology map: a layered graph (segment → controller → devices)
+// laid out deterministically, drawn as inline SVG so it needs no chart library.
+function TopologyView({ topo, extra }) {
+  const nodes = topo.nodes || [];
+  const edges = topo.edges || [];
+  if (nodes.length === 0) {
+    return <EmptyState title="No devices on the segment" icon="layers">{topo.note || 'Run Identify-All against a segment with devices.'}</EmptyState>;
+  }
+  const KIND = {
+    segment: { fill: '#0f1720', stroke: '#334155', text: '#94a3b8', icon: 'layers', tag: 'subnet' },
+    controller: { fill: 'rgba(16,185,129,0.10)', stroke: '#10b981', text: '#6ee7b7', icon: 'bolt', tag: 'IO-Controller' },
+    supervisor: { fill: 'rgba(139,92,246,0.10)', stroke: '#8b5cf6', text: '#c4b5fd', icon: 'shield', tag: 'PN-Supervisor' },
+    device: { fill: 'rgba(56,189,248,0.08)', stroke: '#38bdf8', text: '#7dd3fc', icon: 'plug', tag: 'IO-Device' },
+  };
+  const COL = { segment: 0, controller: 1, supervisor: 1, device: 2 };
+  const colX = [30, 300, 570];
+  const NW = 200;
+  const NH = 50;
+  const GAP = 22;
+  // Stack nodes within their column in declared order.
+  const counts = [0, 0, 0];
+  const pos = {};
+  for (const n of nodes) {
+    const c = COL[n.kind] ?? 2;
+    const i = counts[c]++;
+    pos[n.id] = { x: colX[c], y: 20 + i * (NH + GAP), c };
+  }
+  const rows = Math.max(...counts, 1);
+  const W = 790;
+  const H = 20 + rows * (NH + GAP);
+  const center = (p) => ({ x: p.x + NW / 2, y: p.y + NH / 2 });
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400">
+        <Icon name="layers" size={13} className="text-slate-500" /> Segment topology
+        <span className="ml-auto normal-case text-slate-600">{nodes.filter((n) => n.kind !== 'segment').length} devices</span>
+      </div>
+      <div className="rounded-lg border border-edge bg-ink overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 640, height: H }}>
+          {edges.map((e, i) => {
+            const a = pos[e.from];
+            const b = pos[e.to];
+            if (!a || !b) return null;
+            const p1 = center(a);
+            const p2 = center(b);
+            const mx = (p1.x + p2.x) / 2;
+            return <path key={i} d={`M${p1.x + NW / 2},${p1.y} C${mx},${p1.y} ${mx},${p2.y} ${p2.x - NW / 2},${p2.y}`} fill="none" stroke="#243244" strokeWidth="1.5" />;
+          })}
+          {nodes.map((n) => {
+            const p = pos[n.id];
+            const k = KIND[n.kind] || KIND.device;
+            return (
+              <g key={n.id} transform={`translate(${p.x},${p.y})`}>
+                <rect width={NW} height={NH} rx="8" fill={k.fill} stroke={k.stroke} strokeWidth="1.5" />
+                <text x="12" y="21" fontSize="13" fontWeight="600" fill={k.text} style={{ fontFamily: 'ui-monospace, monospace' }}>
+                  {(n.label || '').slice(0, 22)}
+                </text>
+                <text x="12" y="38" fontSize="10.5" fill="#64748b" style={{ fontFamily: 'ui-monospace, monospace' }}>
+                  {n.kind === 'segment' ? k.tag : `${n.ip || 'no IP'}${n.role ? ' · ' + n.role : ''}`}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      {(extra?.duplicate_names?.length > 0 || extra?.unconfigured?.length > 0) && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {extra.duplicate_names?.length > 0 && (
+            <span className="rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 px-2 py-1 flex items-center gap-1.5">
+              <Icon name="warn" size={12} /> duplicate name: {extra.duplicate_names.join(', ')}
+            </span>
+          )}
+          {extra.unconfigured?.length > 0 && (
+            <span className="rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 px-2 py-1 flex items-center gap-1.5">
+              <Icon name="warn" size={12} /> unconfigured (no IP): {extra.unconfigured.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
+      {topo.note && <p className="text-[11px] text-slate-600 leading-relaxed">{topo.note}</p>}
+    </div>
+  );
 }
 
 // Diagnose panel (§7, the differentiator): renders verdicts, not raw data.

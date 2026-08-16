@@ -23,6 +23,7 @@ import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
 import { startDhcpSim } from './dhcp-sim.js';
 import { startProfinetDcpSim } from './profinet-dcp-sim.js';
+import * as profinetDcp from '../src/drivers/profinet-dcp.js';
 import net from 'node:net';
 
 let passed = 0;
@@ -653,6 +654,19 @@ async function main() {
     assert.strictEqual(art.verdicts[0].severity, 'error');
     rogueSim.close();
   });
+  await test('assign runs DISCOVER→REQUEST→ACK and reads back the leased IP (double-gate)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { mac: 'aa:bb:cc:11:22:33', requested_ip: '10.10.0.50', server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    assert.strictEqual(prep.proposed_value, '10.10.0.50');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, '10.10.0.50');
+    assert.strictEqual(art.result.verified, true);
+    assert.strictEqual(art.result.mac, 'aa:bb:cc:11:22:33');
+  });
   dhcpSim.close();
 
   // ---- PROFINET DCP (PRONETA-style) ----
@@ -696,6 +710,51 @@ async function main() {
     const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: newSim.port, window_ms: 900 });
     assert.strictEqual(art.verdicts[0].rule_id, 'unconfigured-ip');
     newSim.close();
+  });
+  await test('browse renders a topology (segment → controller → device)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    const t = art.result.topology;
+    assert.ok(t.nodes.some((n) => n.kind === 'controller' && n.label === 'plc-line3'));
+    assert.ok(t.nodes.some((n) => n.kind === 'device' && n.label === 'io-station-1'));
+    assert.ok(t.nodes.some((n) => n.kind === 'segment'));
+    assert.ok(t.edges.length >= 2); // controller hangs off segment; device hangs off controller
+  });
+  await test('DCP Set assigns IP / subnet / gateway (through the double-gate, with read-back)', async () => {
+    const cfgSim = await startProfinetDcpSim({
+      devices: [{ name: 'fresh-device', ip: '0.0.0.0', subnet: '0.0.0.0', gateway: '0.0.0.0', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { operation: 'set-ip', target: 'fresh-device', ip: '192.168.10.5', subnet: '255.255.255.0', gateway: '192.168.10.1', responder: '127.0.0.1', responder_port: cfgSim.port, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    assert.strictEqual(prep.current_value, '(unconfigured)');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, '192.168.10.5');
+    assert.strictEqual(art.result.verified, true);
+    cfgSim.close();
+  });
+  await test('DCP Set renames a station (NameOfStation)', async () => {
+    const cfgSim = await startProfinetDcpSim({
+      devices: [{ name: 'old-name', ip: '192.168.0.30', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const ctx = { host: '127.0.0.1', armed: true, params: { operation: 'set-name', target: 'old-name', new_name: 'press-42', responder: '127.0.0.1', responder_port: cfgSim.port, window_ms: 900 } };
+    const out = await profinetDcp.verbs.write(ctx);
+    assert.strictEqual(out.artifact.result.ack, true);
+    assert.strictEqual(out.artifact.result.read_back, 'press-42');
+    assert.strictEqual(out.artifact.result.verified, true);
+    cfgSim.close();
+  });
+  await test('DCP Set refuses to compose a frame when not ARMED', async () => {
+    await assert.rejects(
+      () => profinetDcp.verbs.write({ host: '127.0.0.1', armed: false, params: { operation: 'set-name', target: 'x', new_name: 'y' } }),
+      /not ARMED/,
+    );
   });
   dcpSim.close();
 

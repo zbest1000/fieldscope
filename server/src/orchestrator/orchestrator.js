@@ -159,6 +159,26 @@ export class Orchestrator {
     const driver = this.registry.get(rt.driverId);
     if (!driver.manifest.write_capable) throw new Error(`${rt.driverId} is not write-capable`);
 
+    // A driver whose write isn't a single register/value (e.g. a PROFINET DCP
+    // Set that reconfigures a station name or IP/subnet/gateway, or a DHCP lease
+    // assignment) provides its own preview: it names the point and computes the
+    // current → proposed pair for Gate 2. Falls back to the read-based path below.
+    if (driver.verbs.previewWrite) {
+      const ctx = this.#ctx(rt, params);
+      const pv = await driver.verbs.previewWrite(ctx);
+      const token = crypto.randomBytes(8).toString('hex');
+      rt.pendingWrites.set(token, { params, currentValue: pv.current_value ?? null, created: nowMs() });
+      return {
+        token,
+        target: pv.target ?? (rt.port ? `${rt.host}:${rt.port}` : rt.host),
+        point: pv.point,
+        current_value: pv.current_value ?? null,
+        proposed_value: pv.proposed_value,
+        requires_arm: true,
+        armed: rt.armed,
+      };
+    }
+
     // Read current value first so the confirm shows current → proposed (§4.1).
     let currentValue = null;
     try {
