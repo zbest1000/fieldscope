@@ -52,6 +52,16 @@ export function renderSessionReport({ session, artifacts, audit, generatedAt = D
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
   const writes = audit.filter((a) => a.session_id === session.id);
 
+  // Inventory: every enumerated point/object/register table (a browse or read
+  // that produced a `result.tree`), consolidated as the report's device sheet.
+  const MAX_POINTS = 200;
+  const inventoryAreas = artifacts.flatMap((a) =>
+    Array.isArray(a.result?.tree)
+      ? a.result.tree.filter((ar) => ar.points && ar.points.length).map((ar) => ({ verb: a.verb, seq: a.seq, area: ar }))
+      : [],
+  );
+  const pointCount = inventoryAreas.reduce((n, x) => n + x.area.points.length, 0);
+
   const findingsHtml = findings.length
     ? findings
         .map(
@@ -78,6 +88,24 @@ export function renderSessionReport({ session, artifacts, audit, generatedAt = D
     </tr>`,
     )
     .join('');
+
+  const inventoryHtml = inventoryAreas.length
+    ? inventoryAreas
+        .map(
+          (x) => `
+      <div class="inv">
+        <div class="inv-head"><span class="verb">${esc(x.verb)}</span> · ${esc(x.area.area)} <span class="inv-meta">#${esc(x.seq)}</span></div>
+        <table>
+          <thead><tr><th>point</th><th>value</th><th>type</th></tr></thead>
+          <tbody>${x.area.points
+            .slice(0, MAX_POINTS)
+            .map((p) => `<tr><td class="mono">${esc(p.ref)}</td><td class="mono">${esc(p.value)}</td><td>${esc(p.type ?? '')}</td></tr>`)
+            .join('')}${x.area.points.length > MAX_POINTS ? `<tr><td colspan="3">… ${x.area.points.length - MAX_POINTS} more</td></tr>` : ''}</tbody>
+        </table>
+      </div>`,
+        )
+        .join('')
+    : '<p class="allclear">No enumerated points or objects captured in this session.</p>';
 
   const auditHtml = writes.length
     ? `<table>
@@ -122,6 +150,9 @@ export function renderSessionReport({ session, artifacts, audit, generatedAt = D
   .finding .meta { margin-top: 6px; font-size: 11px; color: #94a3b8; font-family: ui-monospace, monospace; }
   .finding ul { margin: 6px 0 0 18px; color: #334155; }
   .allclear { color: #15803d; }
+  .inv { margin-bottom: 14px; }
+  .inv-head { font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 4px; }
+  .inv-head .inv-meta { color: #94a3b8; font-family: ui-monospace, monospace; font-weight: 400; }
   table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e2e8f0; font-size: 12px; }
   th { text-align: left; background: #f1f5f9; padding: 6px 10px; color: #64748b; font-weight: 600; }
   td { padding: 6px 10px; border-top: 1px solid #e2e8f0; vertical-align: top; }
@@ -144,6 +175,7 @@ export function renderSessionReport({ session, artifacts, audit, generatedAt = D
       <div class="cell"><div class="k">ended</div><div class="v">${fmtTime(session.ended_at)}</div></div>
       <div class="cell"><div class="k">clock anchor</div><div class="v">${esc(session.clock_anchor)}</div></div>
       <div class="cell"><div class="k">artifacts</div><div class="v">${artifacts.length}</div></div>
+      <div class="cell"><div class="k">points</div><div class="v">${pointCount}</div></div>
       <div class="cell"><div class="k">verdicts</div><div class="v counts">
         ${Object.entries(counts).filter(([, n]) => n).map(([s, n]) => `<span style="color:${SEV_COLOR[s]}">${n} ${s}</span>`).join(' ') || '0'}
       </div></div>
@@ -152,6 +184,9 @@ export function renderSessionReport({ session, artifacts, audit, generatedAt = D
 
   <h2>Findings (warnings &amp; errors)</h2>
   ${findingsHtml}
+
+  <h2>Point &amp; object inventory</h2>
+  ${inventoryHtml}
 
   <h2>Evidence timeline</h2>
   <table>

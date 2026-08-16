@@ -1026,6 +1026,7 @@ async function main() {
     const { orchestrator, store } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
     await orchestrator.diagnose(ses.id);
+    await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 3 }); // → inventory
     orchestrator.arm(ses.id, 'ARM');
     const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 3, value: 77 });
     await orchestrator.confirmWrite(ses.id, prep.token);
@@ -1036,6 +1037,8 @@ async function main() {
     });
     assert.match(html, /Fieldscope commissioning report/);
     assert.match(html, /Modbus responding normally/); // verdict made it in
+    assert.match(html, /Point &amp; object inventory/); // inventory section present
+    assert.match(html, /holding:0/); // an enumerated point made it into the inventory
     assert.match(html, /modbus-write/); // audit trail made it in
     // credential redaction
     const red = redact({ params: { community: 'private', password: 'hunter2', address: 3 } });
