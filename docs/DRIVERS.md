@@ -53,8 +53,10 @@ flags a **rogue / multi-server** segment (two servers answering one DISCOVER).
 `write` assigns an address to a MAC in either **DHCP** (DORA: DISCOVER → REQUEST
 → ACK) or classic **BOOTP** (single request/reply, no lease) mode.
 
-### DNS (A / PTR) · `dns.js` · 53
-Forward and reverse resolution with record decode; surfaces resolution
+### DNS · `dns.js` · 53
+Forward and reverse resolution (`identify`), and typed record lookups
+(`read` — A / AAAA / MX / TXT / NS / CNAME / SOA / PTR) that can query a chosen
+DNS server directly ("does *this* server resolve X"). Surfaces resolution
 failures and forward/reverse mismatches.
 
 ---

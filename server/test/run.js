@@ -19,6 +19,7 @@ import { startSnmpAgent } from './snmp-agent.js';
 import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
 import { startIec104Sim } from './iec104-sim.js';
+import { startDnsSim } from './dns-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
@@ -273,6 +274,21 @@ async function main() {
     const ses = orchestrator.openSession({ driverId: 'tcp-probe', host: '127.0.0.1', port: 1 });
     const art = await orchestrator.diagnose(ses.id, { timeout: 800 });
     assert.ok(['refused', 'filtered'].includes(art.verdicts[0].rule_id));
+  });
+  await test('DNS read resolves typed records (A/TXT/MX) against a chosen server', async () => {
+    const dnsSim = await startDnsSim({});
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dns', host: '127.0.0.1', port: dnsSim.port });
+    const a = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'A', timeout: 1500 });
+    assert.deepStrictEqual(a.result.tree[0].points.map((p) => p.value), ['10.0.0.5', '10.0.0.6']);
+    const mx = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'MX', timeout: 1500 });
+    assert.strictEqual(mx.result.tree[0].points[0].value, '10 mail.plant.local');
+    const txt = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'TXT', timeout: 1500 });
+    assert.strictEqual(txt.result.tree[0].points[0].value, 'site=plant1');
+    // A name with no record of the requested type resolves to zero records.
+    const none = await orchestrator.runVerb(ses.id, 'read', { name: 'gw.plant.local', type: 'MX', timeout: 1500 });
+    assert.strictEqual(none.result.records, 0);
+    dnsSim.close();
   });
 
   // ---- EtherNet/IP driver against the simulator ----
