@@ -16,11 +16,14 @@ export default function Evidence() {
   const [drift, setDrift] = useState(null);
   const [view, setView] = useState('audit'); // audit | timeline | diff | backups | drift
 
+  const [watches, setWatches] = useState([]);
+
   async function refresh() {
-    const [{ sessions }, { entries }, { backups }] = await Promise.all([api.sessions(), api.audit(), api.backups()]);
+    const [{ sessions }, { entries }, { backups }, { watches }] = await Promise.all([api.sessions(), api.audit(), api.backups(), api.backupWatches()]);
     setSessions(sessions);
     setAudit(entries);
     setBackups(backups);
+    setWatches(watches.map((w) => w.baselineId));
   }
   useEffect(() => { refresh(); }, []);
 
@@ -57,6 +60,28 @@ export default function Evidence() {
     setDrift(res);
     setSelected(null);
     setView('drift');
+  }
+  async function recheck(id) {
+    const res = await api.recheckBaseline(id);
+    setDrift(res);
+    setSelected(null);
+    setView('drift');
+  }
+  async function toggleWatch(id) {
+    if (watches.includes(id)) await api.unwatchBaseline(id);
+    else await api.watchBaseline(id, 300);
+    await refresh();
+  }
+  async function importBaseline(file) {
+    if (!file) return;
+    try {
+      const doc = JSON.parse(await file.text());
+      await api.importBackup(doc);
+      await refresh();
+      setView('backups');
+    } catch (err) {
+      window.alert(`Import failed: ${err.message}`);
+    }
   }
 
   return (
@@ -113,7 +138,7 @@ export default function Evidence() {
         ) : view === 'drift' && drift ? (
           <DriftView drift={drift} />
         ) : view === 'backups' ? (
-          <BackupsView backups={backups} pick={backupPick} onToggle={toggleBackupPick} onDrift={runDrift} />
+          <BackupsView backups={backups} pick={backupPick} watches={watches} onToggle={toggleBackupPick} onDrift={runDrift} onRecheck={recheck} onToggleWatch={toggleWatch} onImport={importBaseline} />
         ) : (
           <AuditView audit={audit} />
         )}
@@ -210,27 +235,32 @@ function DiffView({ rows }) {
 
 // Config baselines: named snapshots of a device's readable config, picked two at
 // a time to compute drift.
-function BackupsView({ backups, pick, onToggle, onDrift }) {
+function BackupsView({ backups, pick, watches, onToggle, onDrift, onRecheck, onToggleWatch, onImport }) {
   return (
     <div className="animate-fade-in">
       <div className="flex items-center gap-2 mb-1">
         <Icon name="layers" size={16} className="text-slate-500" />
         <h2 className="text-sm uppercase tracking-wider text-slate-400 font-semibold">Config baselines</h2>
         <Badge>{backups.length}</Badge>
-        {pick.length === 2 && <Btn size="sm" variant="primary" icon="layers" className="ml-auto" onClick={onDrift}>Compare drift</Btn>}
+        <label className="ml-auto inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border border-edge2 bg-raised/60 text-slate-300 hover:bg-raised cursor-pointer">
+          <Icon name="download" size={13} /> Import baseline
+          <input type="file" accept="application/json,.json" className="hidden" onChange={(e) => { onImport(e.target.files?.[0]); e.target.value = ''; }} />
+        </label>
+        {pick.length === 2 && <Btn size="sm" variant="primary" icon="layers" onClick={onDrift}>Compare drift</Btn>}
       </div>
       <p className="text-xs text-slate-500 mb-4">
         A baseline is a normalized snapshot of a device's readable configuration (identity + point values). Capture one
-        from a session's replay ("Save config baseline"), then check two here to see exactly what drifted.
+        from a session's replay ("Save config baseline"), check two to diff them, or <span className="text-slate-300">Recheck</span> to
+        re-read the device now and see live drift. <span className="text-slate-300">Watch</span> re-checks on an interval.
       </p>
       {backups.length === 0 ? (
-        <EmptyState title="No baselines yet" icon="layers">Open a session and use “Save config baseline”.</EmptyState>
+        <EmptyState title="No baselines yet" icon="layers">Open a session and use “Save config baseline”, or import one.</EmptyState>
       ) : (
         <div className="rounded-lg border border-edge overflow-hidden">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-white/[0.03] text-slate-500">
-                {['', 'name', 'driver', 'address', 'points', 'captured'].map((h, i) => (
+                {['', 'name', 'driver', 'address', 'points', 'captured', ''].map((h, i) => (
                   <th key={i} className="px-3 py-2 text-left font-medium">{h}</th>
                 ))}
               </tr>
@@ -239,11 +269,18 @@ function BackupsView({ backups, pick, onToggle, onDrift }) {
               {backups.map((b) => (
                 <tr key={b.id} className={`border-t border-edge/50 hover:bg-white/[0.02] ${pick.includes(b.id) ? 'bg-white/5' : ''}`}>
                   <td className="px-3 py-2"><input type="checkbox" checked={pick.includes(b.id)} onChange={() => onToggle(b.id)} className="accent-emerald-500" /></td>
-                  <td className="px-3 py-2 text-slate-200">{b.name}</td>
+                  <td className="px-3 py-2 text-slate-200">{b.name} {watches.includes(b.id) && <Badge tone="emerald" className="ml-1">watching</Badge>}</td>
                   <td className="px-3 py-2 text-slate-400">{b.driver_id}</td>
                   <td className="px-3 py-2 font-mono text-slate-500">{b.address}</td>
                   <td className="px-3 py-2 text-slate-400">{b.point_count}</td>
                   <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{new Date(b.created_at).toLocaleString()}</td>
+                  <td className="px-3 py-2 whitespace-nowrap text-right">
+                    <div className="inline-flex items-center gap-1">
+                      <Btn size="sm" variant="ghost" onClick={() => onRecheck(b.id)}>Recheck</Btn>
+                      <Btn size="sm" variant={watches.includes(b.id) ? 'subtle' : 'ghost'} onClick={() => onToggleWatch(b.id)}>{watches.includes(b.id) ? 'Unwatch' : 'Watch'}</Btn>
+                      <a href={`/api/backups/${b.id}/export`} className="text-slate-500 hover:text-slate-200 px-1.5 py-1" title="Export baseline as JSON"><Icon name="download" size={13} /></a>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

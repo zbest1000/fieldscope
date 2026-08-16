@@ -887,6 +887,23 @@ async function main() {
     assert.ok(areas.some((a) => a.startsWith('Secured')));
     const policies = art.result.tree.flatMap((a) => a.points.map((p) => p.type));
     assert.ok(policies.includes('None') && policies.includes('Basic256Sha256'));
+    // A None endpoint alongside secured ones raises the security verdict.
+    assert.strictEqual(art.verdicts?.[0]?.rule_id, 'unsecured-endpoint-offered');
+    assert.strictEqual(art.verdicts[0].severity, 'warn');
+  });
+  await test('opcua security rules classify endpoint security correctly', async () => {
+    const { rules } = makeStack();
+    const only = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 0, unsecured: 2 } });
+    assert.strictEqual(only[0].rule_id, 'only-unsecured-endpoints');
+    assert.strictEqual(only[0].severity, 'error');
+    const mixed = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 1, unsecured: 1 } });
+    assert.strictEqual(mixed[0].rule_id, 'unsecured-endpoint-offered');
+    const secure = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 2, unsecured: 0 } });
+    assert.strictEqual(secure[0].rule_id, 'all-endpoints-secured');
+    assert.strictEqual(secure[0].severity, 'ok');
+    // The handshake-only diagnose (no getendpoints facts) must NOT match these.
+    const handshake = rules.evaluate('opcua', { transport: { tcp_connect: 'success' }, uacp: { ack: true } });
+    assert.strictEqual(handshake[0].rule_id, 'healthy');
   });
   uaSim.server.close();
 
@@ -1150,6 +1167,59 @@ async function main() {
       const drift = diffSnapshots(a.snapshot, b.snapshot);
       assert.strictEqual(drift.severity, 'ok');
       assert.strictEqual(drift.summary.drifted, 0);
+    });
+    await test('recheckBaseline re-opens the device target and reports live drift', async () => {
+      const { captureConfig, recheckBaseline } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'baseline' })).backup;
+      // Clean recheck: no session needed, opens its own from the stored address.
+      const clean = await recheckBaseline(orchestrator, store, base.id);
+      assert.strictEqual(clean.severity, 'ok');
+      // Drift a register, then recheck again.
+      orchestrator.arm(ses.id, 'ARM');
+      const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 0, value: 7777 });
+      await orchestrator.confirmWrite(ses.id, prep.token);
+      const drifted = await recheckBaseline(orchestrator, store, base.id);
+      assert.strictEqual(drifted.severity, 'warn');
+      assert.ok(drifted.summary.drifted >= 1);
+      // keep:false must not leave the transient recheck snapshot behind.
+      assert.strictEqual(store.listBackups().filter((b) => b.id !== base.id).length, 0);
+    });
+    await test('DriftWatcher emits a drift event on its immediate first tick', async () => {
+      const { captureConfig, DriftWatcher } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'watched' })).backup;
+      const events = [];
+      const watcher = new DriftWatcher({ orchestrator, store, emit: (e, p) => events.push({ e, p }) });
+      const result = await watcher.tick(base.id); // deterministic single tick
+      watcher.stopAll();
+      assert.strictEqual(result.severity, 'ok');
+      assert.ok(events.some((x) => x.e === 'drift' && x.p.baselineId === base.id));
+    });
+    await test('export → import round-trips a baseline snapshot', async () => {
+      const { captureConfig } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'exportme' })).backup;
+      // Simulate the export doc, then import it as a new baseline.
+      const doc = { fieldscope_backup: 1, name: base.name, driver_id: base.driver_id, address: base.address, snapshot: base.snapshot };
+      const imported = store.saveBackup({ driver_id: doc.driver_id, name: `${doc.name} (imported)`, address: doc.address, snapshot: doc.snapshot });
+      assert.deepStrictEqual(imported.snapshot.points, base.snapshot.points);
+      assert.strictEqual(imported.point_count, base.point_count);
+    });
+    await test('modbus browse honors an interpretation format (float32 strides two registers)', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const art = await orchestrator.runVerb(ses.id, 'browse', { format: 'float32' });
+      const holding = art.result.tree.find((t) => t.area === 'holding');
+      assert.strictEqual(holding.points[0].type, 'float32');
+      // Two registers per value → refs stride by 2.
+      assert.deepStrictEqual(holding.points.slice(0, 2).map((p) => p.ref), ['holding:0', 'holding:2']);
+      // Bit areas keep bool regardless of format.
+      const coils = art.result.tree.find((t) => t.area === 'coils');
+      assert.strictEqual(coils.points[0].type, 'bool');
     });
     bakSim.server.close();
   }

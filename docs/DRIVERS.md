@@ -168,8 +168,11 @@ SecurityPolicy-**None** secure channel (OpenSecureChannel) and runs
 **GetEndpoints**, enumerating every endpoint the server offers with its security
 mode (None / Sign / SignAndEncrypt), security policy (Basic256Sha256 …) and
 security level — the "which endpoint should my client use, and does it require
-certificates" question, and the entry point to a cert-chain / policy audit.
-Flagship: endpoint-URL-invalid. Full binary codec (NodeIds, ExtensionObjects,
+certificates" question, and the entry point to a cert-chain / policy audit. The
+enumeration feeds **security verdicts**: an unauthenticated `None` endpoint
+offered alongside secured ones (warn), or *only* `None` endpoints — no encrypted
+option at all (error), vs. all endpoints requiring security (ok). Flagship:
+endpoint-URL-invalid. Full binary codec (NodeIds, ExtensionObjects,
 LocalizedText, EndpointDescription) implemented dependency-free.
 
 ---

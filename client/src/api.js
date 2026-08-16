@@ -52,4 +52,9 @@ export const api = {
   backup: (id) => req('GET', `/backups/${id}`),
   deleteBackup: (id) => req('DELETE', `/backups/${id}`),
   backupDiff: (a, b) => req('GET', `/backups/diff?a=${a}&b=${encodeURIComponent(b)}`),
+  recheckBaseline: (id) => req('POST', `/backups/${id}/recheck`),
+  importBackup: (doc) => req('POST', '/backups/import', doc),
+  watchBaseline: (id, interval_s) => req('POST', `/backups/${id}/watch`, { interval_s }),
+  unwatchBaseline: (id) => req('DELETE', `/backups/${id}/watch`),
+  backupWatches: () => req('GET', '/backups/watches'),
 };

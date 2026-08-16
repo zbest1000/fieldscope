@@ -14,7 +14,7 @@ import { EvidenceStore } from './src/evidence/store.js';
 import { RulesEngine } from './src/rules/engine.js';
 import { Orchestrator } from './src/orchestrator/orchestrator.js';
 import { renderSessionReport, toInventoryCsv } from './src/report/report.js';
-import { captureConfig, diffSnapshots } from './src/backup/backup.js';
+import { captureConfig, diffSnapshots, recheckBaseline, DriftWatcher } from './src/backup/backup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5100;
@@ -50,6 +50,8 @@ const orchestrator = new Orchestrator({
   emit: (event, payload) => io.emit(event, payload),
 });
 
+const driftWatcher = new DriftWatcher({ orchestrator, store, emit: (event, payload) => io.emit(event, payload) });
+
 // ---- helpers ---------------------------------------------------------------
 const wrap = (fn) => async (req, res) => {
   try {
@@ -59,6 +61,8 @@ const wrap = (fn) => async (req, res) => {
     res.status(400).json({ error: err.message });
   }
 };
+
+const slug = (s) => String(s || 'baseline').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'baseline';
 
 // ---- meta ------------------------------------------------------------------
 app.get('/api/health', (_req, res) =>
@@ -147,6 +151,26 @@ app.get('/api/backups/:id', (req, res) => {
   if (!b) return res.status(404).json({ error: 'unknown backup' });
   res.json(b);
 });
+// Export a baseline as a portable JSON file (archive / hand off / diff offline).
+app.get('/api/backups/:id/export', (req, res) => {
+  const b = store.getBackup(req.params.id);
+  if (!b) return res.status(404).json({ error: 'unknown backup' });
+  const doc = { fieldscope_backup: 1, name: b.name, driver_id: b.driver_id, address: b.address, created_at: b.created_at, point_count: b.point_count, snapshot: b.snapshot };
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="fieldscope-baseline-${slug(b.name)}.json"`);
+  res.send(JSON.stringify(doc, null, 2));
+});
+// Re-import a previously exported baseline JSON as a new baseline.
+app.post('/api/backups/import', wrap(async (req) => {
+  const doc = req.body || {};
+  if (!doc.snapshot || !Array.isArray(doc.snapshot.points)) throw new Error('not a Fieldscope baseline export (missing snapshot.points)');
+  return store.saveBackup({
+    driver_id: doc.driver_id || 'imported',
+    name: doc.name ? `${doc.name} (imported)` : 'imported baseline',
+    address: doc.address || '',
+    snapshot: doc.snapshot,
+  });
+}));
 app.delete('/api/backups/:id', wrap(async (req) => {
   store.deleteBackup(req.params.id);
   return { deleted: req.params.id };
@@ -167,6 +191,13 @@ app.get('/api/backups/diff', wrap(async (req) => {
   if (!curr) throw new Error('unknown comparison snapshot (b)');
   return { baseline: { id: base.id, name: base.name }, current: { id: curr.id, name: curr.name }, ...diffSnapshots(base.snapshot, curr.snapshot) };
 }));
+// One-shot recheck: re-capture the baseline's device and report drift now.
+app.post('/api/backups/:id/recheck', wrap(async (req) =>
+  recheckBaseline(orchestrator, store, req.params.id, { reads: req.body?.reads || [], keep: !!req.body?.keep })));
+// Drift watch: periodically recheck and emit a `drift` socket event on change.
+app.post('/api/backups/:id/watch', wrap(async (req) => driftWatcher.start(req.params.id, req.body?.interval_s ?? 300)));
+app.delete('/api/backups/:id/watch', wrap(async (req) => driftWatcher.stop(req.params.id)));
+app.get('/api/backups/watches', (_req, res) => res.json({ watches: driftWatcher.list() }));
 
 // ---- reports (§12 phase 8) -------------------------------------------------
 // A self-contained, print-friendly HTML commissioning report for one session:
@@ -218,6 +249,7 @@ function shutdown(signal) {
   shuttingDown = true;
   console.log(`[fieldscope] ${signal} — shutting down`);
   for (const [id] of orchestrator.monitors) orchestrator.stopMonitor(id);
+  driftWatcher.stopAll();
   io.close();
   server.closeIdleConnections?.(); // don't let a parked keep-alive hold the exit
   server.close(() => {

@@ -27,6 +27,12 @@ export const manifest = {
   verbs: ['connect', 'identify', 'browse', 'read', 'write', 'monitor', 'diagnose'],
   params: {
     connect: { unit_id: { type: 'number', default: 1, min: 0, max: 247 } },
+    browse: {
+      // Interpret the first block of each register area with a chosen width /
+      // byte order (bit areas ignore it).
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32', 'uint64', 'int64', 'float64'], default: 'uint16' },
+      byte_order: { type: 'enum', options: ['ABCD', 'CDAB', 'BADC', 'DCBA'], default: 'ABCD' },
+    },
     read: {
       area: { type: 'enum', options: ['holding', 'input', 'coils', 'discrete'], default: 'holding' },
       address: { type: 'number', default: 0, min: 0, max: 65535 },
@@ -382,21 +388,26 @@ export const verbs = {
   },
 
   // Browse builds a small PointTree by reading the first block of each area.
+  // Register areas honor an optional format/byte_order so the point table
+  // reflects the actual interpretation (e.g. browse holding as float32); bit
+  // areas ignore it. Wide types stride multiple registers per point.
   async browse(ctx) {
     const areas = ['holding', 'input', 'coils', 'discrete'];
+    const format = ctx.params?.format ?? 'uint16';
+    const order = orderOf(ctx);
+    const stride = registerStride(format);
     const tree = [];
     for (const area of areas) {
+      const isBits = area === 'coils' || area === 'discrete';
       try {
-        const r = await doRead(ctx, area, 0, 8);
+        const r = await doRead(ctx, area, 0, 8, isBits ? 'uint16' : format, order);
         if (r.decoded) {
           tree.push({
             area,
-            points: r.decoded.values.map((v, i) => ({
-              ref: `${area}:${i}`,
-              address: i,
-              value: v,
-              type: r.decoded.type === 'bits' ? 'bool' : 'uint16',
-            })),
+            points: r.decoded.values.map((v, i) => {
+              const addr = isBits ? i : i * stride;
+              return { ref: `${area}:${addr}`, address: addr, value: v, type: r.decoded.type === 'bits' ? 'bool' : format };
+            }),
           });
         } else if (r.parsed.exception) {
           tree.push({ area, error: r.parsed.exception_text });

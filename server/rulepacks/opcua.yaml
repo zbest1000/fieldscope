@@ -3,6 +3,54 @@
 
 rulepack: opcua
 rules:
+  # Endpoint-security verdicts (from browse → GetEndpoints). These key off
+  # `getendpoints.*`, which only the browse verb produces, so the handshake
+  # diagnose (no getendpoints facts) skips them and falls through to the
+  # transport verdicts below.
+  - id: only-unsecured-endpoints
+    when:
+      getendpoints.ok: true
+      getendpoints.secured: 0
+      getendpoints.unsecured: { gt: 0 }
+    verdict:
+      severity: error
+      title: "Only unauthenticated OPC UA endpoints offered"
+      detail: >
+        Every endpoint this server advertises uses SecurityPolicy None — no
+        signing, no encryption, no certificate check. Anyone on the segment can
+        read and (if writes are allowed) command it, and traffic is in the clear.
+      next_steps:
+        - "Enable a Sign or SignAndEncrypt endpoint (Basic256Sha256) on the server"
+        - "Disable the None endpoint once clients are migrated to a secure policy"
+
+  - id: unsecured-endpoint-offered
+    when:
+      getendpoints.ok: true
+      getendpoints.unsecured: { gt: 0 }
+    verdict:
+      severity: warn
+      title: "Server offers an unauthenticated (None) endpoint"
+      detail: >
+        Alongside its secured endpoints, this server still exposes a
+        SecurityPolicy None endpoint — unsigned, unencrypted, no certificate
+        check. A misconfigured or legacy client will happily connect to it in
+        the clear.
+      next_steps:
+        - "Confirm no production client is using the None endpoint"
+        - "Disable the None endpoint if it is not required"
+
+  - id: all-endpoints-secured
+    when:
+      getendpoints.ok: true
+      getendpoints.unsecured: 0
+    verdict:
+      severity: ok
+      title: "All OPC UA endpoints require security"
+      detail: >
+        Every advertised endpoint uses a signing/encrypting SecurityPolicy —
+        there is no unauthenticated None endpoint. Clients must present a trusted
+        certificate to connect.
+
   - id: port-closed
     when:
       transport.tcp_connect: fail

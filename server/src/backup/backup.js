@@ -144,3 +144,92 @@ export function diffSnapshots(baseSnap, currSnap) {
 function eq(a, b) {
   return String(a) === String(b);
 }
+
+// Split a stored `host:port` (or bare host) address back into parts. IPv6 is
+// out of scope for the sim targets; a bare host keeps port undefined.
+function splitAddress(address) {
+  const s = String(address || '');
+  const i = s.lastIndexOf(':');
+  if (i < 0) return { host: s, port: undefined };
+  const port = Number(s.slice(i + 1));
+  return Number.isInteger(port) ? { host: s.slice(0, i), port } : { host: s, port: undefined };
+}
+
+// Re-capture a baseline's device (opening a fresh session to its stored target)
+// and diff against the stored snapshot — the one-shot drift check a scheduler or
+// the "recheck" button calls. Does not persist the fresh capture by default;
+// pass keep=true to store it too.
+export async function recheckBaseline(orchestrator, store, baselineId, { reads = [], keep = false } = {}) {
+  const base = store.getBackup(baselineId);
+  if (!base) throw new Error('unknown baseline');
+  const { host, port } = splitAddress(base.address);
+  const ses = orchestrator.openSession({ driverId: base.driver_id, host, port });
+  try {
+    const cap = await captureConfig(orchestrator, store, ses.id, { name: `recheck ${base.name}`, reads });
+    const diff = diffSnapshots(base.snapshot, cap.backup.snapshot);
+    if (!keep) store.deleteBackup(cap.backup.id);
+    return {
+      baseline: { id: base.id, name: base.name },
+      current: keep ? { id: cap.backup.id, name: cap.backup.name } : null,
+      checked_at: cap.backup.created_at,
+      ...diff,
+    };
+  } finally {
+    orchestrator.closeSession(ses.id);
+  }
+}
+
+// In-process drift watch: periodically recheck a baseline and emit a socket
+// event whenever drift is present. Ephemeral (cleared on restart) — a real
+// scheduler would persist these, but for a diagnostics workbench a live watch
+// that survives the session is the useful unit.
+export class DriftWatcher {
+  constructor({ orchestrator, store, emit }) {
+    this.orchestrator = orchestrator;
+    this.store = store;
+    this.emit = emit || (() => {});
+    this.watches = new Map(); // baselineId -> { timer, intervalMs, last }
+  }
+
+  async tick(baselineId) {
+    try {
+      const result = await recheckBaseline(this.orchestrator, this.store, baselineId);
+      const w = this.watches.get(baselineId);
+      if (w) w.last = { at: result.checked_at, severity: result.severity, drifted: result.summary.drifted };
+      this.emit('drift', { baselineId, ...result });
+      return result;
+    } catch (err) {
+      this.emit('drift', { baselineId, error: err.message });
+      return null;
+    }
+  }
+
+  start(baselineId, intervalS = 300) {
+    if (!this.store.getBackup(baselineId)) throw new Error('unknown baseline');
+    this.stop(baselineId);
+    const intervalMs = Math.max(10, Number(intervalS) || 300) * 1000;
+    const timer = setInterval(() => this.tick(baselineId), intervalMs);
+    if (timer.unref) timer.unref();
+    this.watches.set(baselineId, { timer, intervalMs, last: null });
+    this.tick(baselineId); // fire an immediate first check
+    return { baselineId, interval_s: intervalMs / 1000, watching: true };
+  }
+
+  stop(baselineId) {
+    const w = this.watches.get(baselineId);
+    if (w) {
+      clearInterval(w.timer);
+      this.watches.delete(baselineId);
+    }
+    return { baselineId, watching: false };
+  }
+
+  list() {
+    return [...this.watches.entries()].map(([baselineId, w]) => ({ baselineId, interval_s: w.intervalMs / 1000, last: w.last }));
+  }
+
+  stopAll() {
+    for (const [, w] of this.watches) clearInterval(w.timer);
+    this.watches.clear();
+  }
+}
