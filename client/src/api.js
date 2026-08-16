@@ -46,4 +46,10 @@ export const api = {
   replay: (id) => req('GET', `/sessions/${id}/replay`),
   diff: (a, b) => req('GET', `/diff?a=${a}&b=${b}`),
   audit: () => req('GET', '/audit'),
+
+  captureBackup: (id, name) => req('POST', `/sessions/${id}/backup`, { name }),
+  backups: () => req('GET', '/backups'),
+  backup: (id) => req('GET', `/backups/${id}`),
+  deleteBackup: (id) => req('DELETE', `/backups/${id}`),
+  backupDiff: (a, b) => req('GET', `/backups/diff?a=${a}&b=${encodeURIComponent(b)}`),
 };

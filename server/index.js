@@ -14,6 +14,7 @@ import { EvidenceStore } from './src/evidence/store.js';
 import { RulesEngine } from './src/rules/engine.js';
 import { Orchestrator } from './src/orchestrator/orchestrator.js';
 import { renderSessionReport, toInventoryCsv } from './src/report/report.js';
+import { captureConfig, diffSnapshots } from './src/backup/backup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5100;
@@ -133,6 +134,39 @@ app.get('/api/diff', (req, res) => {
   res.json({ rows: store.diff(a, b) });
 });
 app.get('/api/audit', (_req, res) => res.json({ entries: store.listAudit() }));
+
+// ---- config backups & drift detection --------------------------------------
+// Capture a device's readable configuration as a named baseline (drives the
+// driver's identify/browse/read verbs and normalizes the result into a stable,
+// diffable point list), list baselines, and diff any two for drift.
+app.post('/api/sessions/:id/backup', wrap(async (req) =>
+  captureConfig(orchestrator, store, req.params.id, { name: req.body?.name, reads: req.body?.reads || [] })));
+app.get('/api/backups', (_req, res) => res.json({ backups: store.listBackups() }));
+app.get('/api/backups/:id', (req, res) => {
+  const b = store.getBackup(req.params.id);
+  if (!b) return res.status(404).json({ error: 'unknown backup' });
+  res.json(b);
+});
+app.delete('/api/backups/:id', wrap(async (req) => {
+  store.deleteBackup(req.params.id);
+  return { deleted: req.params.id };
+}));
+// Drift diff: ?a=<baselineId>&b=<baselineId>, or capture-and-compare when b is a
+// live session (b=session:<sessionId>).
+app.get('/api/backups/diff', wrap(async (req) => {
+  const { a, b } = req.query;
+  const base = store.getBackup(a);
+  if (!base) throw new Error('unknown baseline (a)');
+  let curr;
+  if (typeof b === 'string' && b.startsWith('session:')) {
+    const cap = await captureConfig(orchestrator, store, b.slice('session:'.length), { name: `drift-check vs ${base.name}` });
+    curr = cap.backup;
+  } else {
+    curr = store.getBackup(b);
+  }
+  if (!curr) throw new Error('unknown comparison snapshot (b)');
+  return { baseline: { id: base.id, name: base.name }, current: { id: curr.id, name: curr.name }, ...diffSnapshots(base.snapshot, curr.snapshot) };
+}));
 
 // ---- reports (§12 phase 8) -------------------------------------------------
 // A self-contained, print-friendly HTML commissioning report for one session:

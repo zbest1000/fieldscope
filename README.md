@@ -29,6 +29,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **Session orchestrator** (ARM state machine, rate budget, monitor loops) | ✅ `server/src/orchestrator` |
 | **Double-gated write path** (ARM + per-write confirm + read-back + mandatory audit, §4.1) | ✅ |
 | **Commissioning report export** (self-contained HTML, findings-first, credential redaction, §12.8) | ✅ `server/src/report` |
+| **Config backup & drift detection** (capture a device's readable config as a named baseline, diff two baselines — or a baseline vs a live re-capture — into a plain-English drift verdict) | ✅ `server/src/backup` |
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
 | **Discovery** | **IP Scanner** (TCP host sweep, port scan, service ID) · **DHCP/BOOTP** (DISCOVER + option decode, rogue-server detection, address assignment in both **DHCP** DORA and classic **BOOTP** modes) · **PROFINET DCP + LLDP** (DCP Identify-All discovery, a **physical port topology** from LLDP — each device's ports and the port-to-port cabling — and **DCP Set** to commission station name / IP / subnet / gateway, ARM-gated) |
@@ -118,7 +119,7 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 104 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 108 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 

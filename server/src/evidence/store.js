@@ -78,8 +78,19 @@ export class EvidenceStore {
         after_value TEXT,
         confirmation TEXT
       );
+      CREATE TABLE IF NOT EXISTS backup (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        driver_id TEXT,
+        name TEXT,
+        address TEXT,
+        created_at INTEGER,
+        point_count INTEGER,
+        snapshot TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_artifact_session ON artifact(session_id, seq);
       CREATE INDEX IF NOT EXISTS idx_verdict_artifact ON verdict(artifact_id);
+      CREATE INDEX IF NOT EXISTS idx_backup_created ON backup(created_at);
     `);
   }
 
@@ -259,6 +270,45 @@ export class EvidenceStore {
       error: row.error,
       verdicts,
     };
+  }
+
+  // ---- config backups (§12.x drift detection) -----------------------------
+  // A backup is a named, normalized snapshot of a device's readable
+  // configuration (identity + point values), diffable against a later capture.
+  saveBackup(b) {
+    const id = b.id || uid('bak');
+    this.db
+      .prepare(
+        `INSERT INTO backup (id,session_id,driver_id,name,address,created_at,point_count,snapshot)
+         VALUES (@id,@session_id,@driver_id,@name,@address,@created_at,@point_count,@snapshot)`,
+      )
+      .run({
+        id,
+        session_id: b.session_id || null,
+        driver_id: b.driver_id,
+        name: b.name || id,
+        address: b.address || '',
+        created_at: now(),
+        point_count: b.snapshot?.points?.length || 0,
+        snapshot: JSON.stringify(b.snapshot || {}),
+      });
+    return this.getBackup(id);
+  }
+
+  getBackup(id) {
+    const row = this.db.prepare('SELECT * FROM backup WHERE id=?').get(id);
+    if (!row) return null;
+    return { ...row, snapshot: safeParse(row.snapshot, {}) };
+  }
+
+  listBackups(limit = 200) {
+    return this.db
+      .prepare('SELECT id,session_id,driver_id,name,address,created_at,point_count FROM backup ORDER BY created_at DESC LIMIT ?')
+      .all(limit);
+  }
+
+  deleteBackup(id) {
+    this.db.prepare('DELETE FROM backup WHERE id=?').run(id);
   }
 
   // ---- audit (§4.1, non-disableable) --------------------------------------

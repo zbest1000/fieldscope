@@ -1097,6 +1097,63 @@ async function main() {
   });
   dcpSim.close();
 
+  // ---- config backup & drift detection ----
+  console.log('config backup (drift detection)');
+  {
+    const bakSim = await startModbusSim({});
+    await test('normalizeSnapshot flattens identity + tree points into a sorted list', async () => {
+      const { normalizeSnapshot } = await import('../src/backup/backup.js');
+      const snap = normalizeSnapshot([
+        { verb: 'identify', result: { unit_id: 1, rtt_ms: 4.2, modbus_responding: true } },
+        { verb: 'browse', result: { tree: [{ area: 'holding', points: [{ ref: 'holding:1', value: 1001, type: 'uint16' }, { ref: 'holding:0', value: 1000, type: 'uint16' }] }] } },
+      ]);
+      // rtt_ms and modbus_responding are transient — excluded; identity kept.
+      assert.ok(snap.points.some((p) => p.key === 'identity/unit_id'));
+      assert.ok(!snap.points.some((p) => p.point === 'rtt_ms'));
+      // Sorted by key (stable diff).
+      const keys = snap.points.map((p) => p.key);
+      assert.deepStrictEqual(keys, [...keys].sort());
+    });
+    await test('captureConfig stores a named baseline of the readable config', async () => {
+      const { captureConfig } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const { backup } = await captureConfig(orchestrator, store, ses.id, { name: 'commissioned' });
+      assert.strictEqual(backup.name, 'commissioned');
+      assert.ok(backup.point_count > 0, 'expected captured points');
+      assert.deepStrictEqual(store.getBackup(backup.id).snapshot.points, backup.snapshot.points);
+      assert.ok(store.listBackups().some((b) => b.id === backup.id));
+    });
+    await test('a register write shows up as drift against the baseline', async () => {
+      const { captureConfig, diffSnapshots } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'baseline' })).backup;
+      // Change holding[0] through the double-gate.
+      orchestrator.arm(ses.id, 'ARM');
+      const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 0, value: 4242 });
+      await orchestrator.confirmWrite(ses.id, prep.token);
+      const after = (await captureConfig(orchestrator, store, ses.id, { name: 'after-change' })).backup;
+      const drift = diffSnapshots(base.snapshot, after.snapshot);
+      assert.strictEqual(drift.severity, 'warn');
+      const changed = drift.rows.find((r) => r.status === 'changed');
+      assert.ok(changed, 'expected a changed point');
+      assert.strictEqual(Number(changed.after), 4242);
+      assert.ok(drift.summary.changed >= 1);
+    });
+    await test('re-capturing an unchanged device reports no drift', async () => {
+      const { captureConfig, diffSnapshots } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const a = (await captureConfig(orchestrator, store, ses.id, { name: 'a' })).backup;
+      const b = (await captureConfig(orchestrator, store, ses.id, { name: 'b' })).backup;
+      const drift = diffSnapshots(a.snapshot, b.snapshot);
+      assert.strictEqual(drift.severity, 'ok');
+      assert.strictEqual(drift.summary.drifted, 0);
+    });
+    bakSim.server.close();
+  }
+
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');
   await test('report renders findings, timeline, and audit with redaction', async () => {
