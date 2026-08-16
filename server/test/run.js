@@ -157,6 +157,26 @@ async function main() {
     assert.match(art.raw.rx, /^[0-9a-f]+$/);
   });
 
+  await test('register data-type interpretation (int16 / uint32 / float32, word order)', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    assert.deepStrictEqual(interpretRegisters([0xffff, 0x7fff], 'int16'), [-1, 32767]);
+    assert.deepStrictEqual(interpretRegisters([0x0001, 0x0002], 'uint32', 'big'), [0x00010002]); // 65538
+    assert.deepStrictEqual(interpretRegisters([0x0001, 0x0002], 'uint32', 'little'), [0x00020001]); // 131073
+    assert.deepStrictEqual(interpretRegisters([0xffff, 0xffff], 'int32'), [-1]);
+    const f = interpretRegisters([0x4248, 0xf5c3], 'float32', 'big')[0]; // ≈ 50.24
+    assert.ok(Math.abs(f - 50.24) < 0.01, `expected ~50.24, got ${f}`);
+  });
+  await test('read interprets a register block as uint32 end-to-end', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    const art = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 4, format: 'uint32', word_order: 'big' });
+    assert.strictEqual(art.result.format, 'uint32');
+    assert.deepStrictEqual(art.result.registers, [1000, 1001, 1002, 1003]); // raw regs preserved
+    assert.deepStrictEqual(art.result.values, interpretRegisters([1000, 1001, 1002, 1003], 'uint32', 'big'));
+    assert.strictEqual(art.result.values.length, 2);
+  });
+
   await test('exception 0x0B produces the gateway-slave-dead verdict', async () => {
     const exSim = await startModbusSim({ port: 0, exception: 0x0b });
     const { orchestrator } = makeStack();

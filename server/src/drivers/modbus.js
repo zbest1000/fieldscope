@@ -31,6 +31,11 @@ export const manifest = {
       area: { type: 'enum', options: ['holding', 'input', 'coils', 'discrete'], default: 'holding' },
       address: { type: 'number', default: 0, min: 0, max: 65535 },
       count: { type: 'number', default: 8, min: 1, max: 125 },
+      // Interpret register pairs as wider types (the constant field question:
+      // "is this a float, and which word order?"). 32-bit types consume two
+      // registers each; word_order picks high-word-first (ABCD) vs low (CDAB).
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32'], default: 'uint16' },
+      word_order: { type: 'enum', options: ['big', 'little'], default: 'big' },
     },
     write: {
       area: { type: 'enum', options: ['holding', 'coil'], default: 'holding' },
@@ -141,7 +146,27 @@ function readPdu(area, address, count) {
   return { fc, pdu };
 }
 
-function decodeReadResponse(area, parsed, count) {
+const round = (n) => Math.round(n * 1000) / 1000;
+
+// Reinterpret a raw uint16 register array as a wider numeric type. 32-bit types
+// combine register pairs; word_order 'big' = high word first (ABCD), 'little' =
+// low word first (CDAB) — the two conventions PLCs disagree on for the same float.
+export function interpretRegisters(regs, format = 'uint16', wordOrder = 'big') {
+  if (format === 'uint16') return regs.slice();
+  if (format === 'int16') return regs.map((r) => (r & 0x8000 ? r - 0x10000 : r));
+  const out = [];
+  for (let i = 0; i + 1 < regs.length; i += 2) {
+    const hi = wordOrder === 'little' ? regs[i + 1] : regs[i];
+    const lo = wordOrder === 'little' ? regs[i] : regs[i + 1];
+    const u32 = (hi * 0x10000 + lo) >>> 0;
+    if (format === 'uint32') out.push(u32);
+    else if (format === 'int32') out.push(u32 | 0);
+    else if (format === 'float32') { const b = Buffer.alloc(4); b.writeUInt32BE(u32, 0); out.push(round(b.readFloatBE(0))); }
+  }
+  return out;
+}
+
+function decodeReadResponse(area, parsed, count, format = 'uint16', wordOrder = 'big') {
   if (parsed.exception || !parsed.data) return null;
   const body = parsed.data;
   const byteCount = body.readUInt8(0);
@@ -156,10 +181,10 @@ function decodeReadResponse(area, parsed, count) {
   }
   const regs = [];
   for (let i = 0; i + 1 < payload.length; i += 2) regs.push(payload.readUInt16BE(i));
-  return { type: 'registers', values: regs };
+  return { type: 'registers', registers: regs, values: interpretRegisters(regs, format, wordOrder), format, word_order: wordOrder };
 }
 
-async function doRead(ctx, area, address, count) {
+async function doRead(ctx, area, address, count, format = 'uint16', wordOrder = 'big') {
   const timeout = ctx.params?.timeout ?? 3000;
   const { fc, pdu } = readPdu(area, address, count);
   const { request, response, connectMs, rttMs } = await transact(
@@ -170,7 +195,7 @@ async function doRead(ctx, area, address, count) {
     timeout,
   );
   const parsed = parseResponse(response, fc);
-  const decoded = decodeReadResponse(area, parsed, count);
+  const decoded = decodeReadResponse(area, parsed, count, format, wordOrder);
   return { request, response, parsed, decoded, connectMs, rttMs, area, address, count };
 }
 
@@ -285,8 +310,11 @@ export const verbs = {
     const area = ctx.params?.area ?? 'holding';
     const address = ctx.params?.address ?? 0;
     const count = ctx.params?.count ?? 8;
+    const format = ctx.params?.format ?? 'uint16';
+    const wordOrder = ctx.params?.word_order ?? 'big';
     try {
-      const r = await doRead(ctx, area, address, count);
+      const r = await doRead(ctx, area, address, count, format, wordOrder);
+      const isReg = r.decoded?.type === 'registers';
       return {
         artifact: makeArtifact({
           verb: 'read',
@@ -296,7 +324,10 @@ export const verbs = {
             area,
             address,
             count,
+            format: isReg ? format : undefined,
+            word_order: isReg && format.endsWith('32') ? wordOrder : undefined,
             values: r.decoded ? r.decoded.values : null,
+            registers: isReg && format !== 'uint16' ? r.decoded.registers : undefined,
             exception: r.parsed.exception ? r.parsed.exception_text : null,
             rtt_ms: r.rttMs,
           },
