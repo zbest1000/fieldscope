@@ -176,6 +176,17 @@ function parseReadVarResponse(buf) {
   };
 }
 
+// Render the interpreted values as an address → value table (the UI draws any
+// `tree`). Stride is the byte width of each value.
+function s7ValueTree(area, db, start, values, format) {
+  const stride = format === 'bytes' ? 1 : format === 'uint16' || format === 'int16' ? 2 : 4;
+  const label = (o) => (area === 'DB' ? `DB${db}.DBB${o}` : `${area}${o}`);
+  return [{
+    area: `${area === 'DB' ? `DB${db}` : area} @${start}${format !== 'bytes' ? ` · ${format}` : ''} · ${values.length} value(s)`,
+    points: values.map((v, i) => ({ ref: label(start + i * stride), value: v, type: format })),
+  }];
+}
+
 // Interpret raw big-endian bytes (S7 is big-endian) as a wider numeric type.
 function interpretS7(bytes, format) {
   const out = [];
@@ -411,6 +422,7 @@ export const verbs = {
             address: addr,
             status: rd ? rd.return_text : 'no response',
             values: ok ? interpretS7(rd.bytes, format) : null,
+            tree: ok ? s7ValueTree(area, db, start, interpretS7(rd.bytes, format), format) : undefined,
             bytes: ok ? rd.bytes.toString('hex') : undefined,
             negotiated_pdu: r.setup ? r.setup.negotiated_pdu : null,
           },

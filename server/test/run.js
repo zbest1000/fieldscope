@@ -175,6 +175,8 @@ async function main() {
     assert.deepStrictEqual(art.result.registers, [1000, 1001, 1002, 1003]); // raw regs preserved
     assert.deepStrictEqual(art.result.values, interpretRegisters([1000, 1001, 1002, 1003], 'uint32', 'big'));
     assert.strictEqual(art.result.values.length, 2);
+    // Rendered as an address→value table; 32-bit values stride two registers.
+    assert.deepStrictEqual(art.result.tree[0].points.map((p) => p.ref), ['holding:0', 'holding:2']);
   });
 
   await test('exception 0x0B produces the gateway-slave-dead verdict', async () => {
@@ -683,6 +685,8 @@ async function main() {
     assert.strictEqual(u16.result.status, 'success');
     assert.deepStrictEqual(u16.result.values, [100, 200]);
     assert.strictEqual(u16.result.address, 'DB1.DBB0');
+    // Rendered as a byte-addressed value table (uint16 strides two bytes).
+    assert.deepStrictEqual(u16.result.tree[0].points.map((p) => p.ref), ['DB1.DBB0', 'DB1.DBB2']);
     // The float at byte 4.
     const f = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 1, start: 4, count: 4, format: 'float32' });
     assert.ok(Math.abs(f.result.values[0] - 50.24) < 0.01, `got ${f.result.values[0]}`);

@@ -154,6 +154,18 @@ function readPdu(area, address, count) {
 
 const round = (n) => Math.round(n * 1000) / 1000;
 
+// Render a decoded read as an address → value table (the UI draws any `tree`).
+// 32-bit formats stride two registers per value.
+function valueTree(area, address, decoded, format) {
+  const isBits = area === 'coils' || area === 'discrete';
+  const stride = format === 'uint32' || format === 'int32' || format === 'float32' ? 2 : 1;
+  const type = isBits ? 'bool' : format;
+  return [{
+    area: `${area} @${address}${!isBits && format !== 'uint16' ? ` · ${format}` : ''} · ${decoded.values.length} value(s)`,
+    points: decoded.values.map((v, i) => ({ ref: `${area}:${address + i * stride}`, value: v, type })),
+  }];
+}
+
 // Reinterpret a raw uint16 register array as a wider numeric type. 32-bit types
 // combine register pairs; word_order 'big' = high word first (ABCD), 'little' =
 // low word first (CDAB) — the two conventions PLCs disagree on for the same float.
@@ -358,6 +370,7 @@ export const verbs = {
             word_order: isReg && format.endsWith('32') ? wordOrder : undefined,
             values: r.decoded ? r.decoded.values : null,
             registers: isReg && format !== 'uint16' ? r.decoded.registers : undefined,
+            tree: r.decoded ? valueTree(area, address, r.decoded, format) : undefined,
             exception: r.parsed.exception ? r.parsed.exception_text : null,
             rtt_ms: r.rttMs,
           },
