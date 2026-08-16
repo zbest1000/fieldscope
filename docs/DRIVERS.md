@@ -82,12 +82,19 @@ its neighbours stay clean — the flagship "which cable is bad" verdict.
 
 ### Modbus TCP ⚡ · `modbus.js` · 502
 MBAP-framed register/coil access. `read` pulls holding / input registers and
-coils / discrete inputs, and can **interpret register pairs** as int16 / uint32
-/ int32 / float32 with big or little **word order** (the constant "is this a
-float, which order?" question). `write` sets a single coil (FC05) / register
-(FC06), or a **32-bit setpoint** across two registers via FC16 — all behind the
-double-gate with read-back. **Diagnose** decodes exception codes; the flagship
-is a gateway whose downstream RTU is dead (exception 0x0B) vs a healthy slave.
+coils / discrete inputs, and **interprets register runs** as int16 / uint32 /
+int32 / float32 / **uint64 / int64 / float64** — combining two registers into a
+32-bit value or four into a 64-bit one — with every Modbus **byte/word order**
+quirk covered: `ABCD` (big-endian), `CDAB` (word-swapped), `BADC` (byte-swapped),
+`DCBA` (little-endian). This is the constant field question ("is this a float,
+and in which order does *this* device store it?") — flip the order until the
+value reads sane. Legacy `big`/`little` map to `ABCD`/`CDAB`. 64-bit integers
+beyond JavaScript's safe range are returned as exact decimal strings (no
+precision loss). `write` sets a single coil (FC05) / register (FC06), or a wide
+**setpoint** across two or four registers via FC16 in the chosen byte order — all
+behind the double-gate with read-back. **Diagnose** decodes exception codes; the
+flagship is a gateway whose downstream RTU is dead (exception 0x0B) vs a healthy
+slave.
 
 ### EtherNet/IP + CIP · `ethernet-ip.js` · 44818
 CIP Identity object via List Identity (`identify`), decoding the **status word +

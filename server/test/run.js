@@ -167,6 +167,34 @@ async function main() {
     const f = interpretRegisters([0x4248, 0xf5c3], 'float32', 'big')[0]; // ≈ 50.24
     assert.ok(Math.abs(f - 50.24) < 0.01, `expected ~50.24, got ${f}`);
   });
+  await test('all four byte/word orders decode 0x12345678 (ABCD/CDAB/BADC/DCBA)', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    // 0x12345678: bytes A=12 B=34 C=56 D=78. reg0=A,B ; reg1=C,D in ABCD.
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'ABCD'), [0x12345678]);
+    assert.deepStrictEqual(interpretRegisters([0x5678, 0x1234], 'uint32', 'CDAB'), [0x12345678]); // word swap
+    assert.deepStrictEqual(interpretRegisters([0x3412, 0x7856], 'uint32', 'BADC'), [0x12345678]); // byte swap
+    assert.deepStrictEqual(interpretRegisters([0x7856, 0x3412], 'uint32', 'DCBA'), [0x12345678]); // both
+    // Legacy big/little alias to ABCD/CDAB.
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'big'), interpretRegisters([0x1234, 0x5678], 'uint32', 'ABCD'));
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'little'), interpretRegisters([0x1234, 0x5678], 'uint32', 'CDAB'));
+  });
+  await test('64-bit interpretation + encode round-trip across all byte orders', async () => {
+    const { interpretRegisters, encodeRegisters, registerStride } = await import('../src/drivers/modbus.js');
+    assert.strictEqual(registerStride('float64'), 4);
+    assert.strictEqual(registerStride('int64'), 4);
+    for (const order of ['ABCD', 'CDAB', 'BADC', 'DCBA']) {
+      for (const [fmt, val] of [['float64', -1234.5], ['int64', -123456789], ['uint64', 4000000000], ['float32', 3.14], ['int32', -42]]) {
+        const regs = encodeRegisters(val, fmt, order);
+        assert.strictEqual(regs.length, registerStride(fmt), `${fmt} stride`);
+        const back = interpretRegisters(regs, fmt, order)[0];
+        if (fmt.startsWith('float')) assert.ok(Math.abs(Number(back) - val) < 0.01, `${fmt}/${order}: ${back} != ${val}`);
+        else assert.strictEqual(Number(back), val, `${fmt}/${order}`);
+      }
+    }
+    // A full-range uint64 survives as an exact decimal string (no Number precision loss).
+    const max = encodeRegisters('18446744073709551615', 'uint64', 'ABCD');
+    assert.strictEqual(interpretRegisters(max, 'uint64', 'ABCD')[0], '18446744073709551615');
+  });
   await test('read interprets a register block as uint32 end-to-end', async () => {
     const { interpretRegisters } = await import('../src/drivers/modbus.js');
     const { orchestrator } = makeStack();

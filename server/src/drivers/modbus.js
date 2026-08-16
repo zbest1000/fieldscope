@@ -31,21 +31,23 @@ export const manifest = {
       area: { type: 'enum', options: ['holding', 'input', 'coils', 'discrete'], default: 'holding' },
       address: { type: 'number', default: 0, min: 0, max: 65535 },
       count: { type: 'number', default: 8, min: 1, max: 125 },
-      // Interpret register pairs as wider types (the constant field question:
-      // "is this a float, and which word order?"). 32-bit types consume two
-      // registers each; word_order picks high-word-first (ABCD) vs low (CDAB).
-      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32'], default: 'uint16' },
-      word_order: { type: 'enum', options: ['big', 'little'], default: 'big' },
+      // Interpret register runs as wider types (the constant field question:
+      // "is this a float, and in which byte order?"). 32-bit types consume two
+      // registers, 64-bit types four; byte_order handles every Modbus quirk of
+      // word- and byte-swapping: ABCD (big), CDAB (word-swap), BADC (byte-swap),
+      // DCBA (little). Legacy big/little map to ABCD/CDAB.
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32', 'uint64', 'int64', 'float64'], default: 'uint16' },
+      byte_order: { type: 'enum', options: ['ABCD', 'CDAB', 'BADC', 'DCBA'], default: 'ABCD' },
     },
     write: {
       area: { type: 'enum', options: ['holding', 'coil'], default: 'holding' },
       address: { type: 'number', default: 0, min: 0, max: 65535 },
       value: { type: 'number', default: 0 },
-      // 32-bit formats encode `value` into two registers and write them with
-      // FC16 (Write Multiple Registers) — e.g. a float setpoint. word_order
-      // must match the device (ABCD high-first vs CDAB low-first).
-      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32'], default: 'uint16' },
-      word_order: { type: 'enum', options: ['big', 'little'], default: 'big' },
+      // Wide formats encode `value` into 2 (32-bit) or 4 (64-bit) registers and
+      // write them with FC16 (Write Multiple Registers) — e.g. a float setpoint.
+      // byte_order must match the device (ABCD/CDAB/BADC/DCBA).
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32', 'uint64', 'int64', 'float64'], default: 'uint16' },
+      byte_order: { type: 'enum', options: ['ABCD', 'CDAB', 'BADC', 'DCBA'], default: 'ABCD' },
     },
   },
 };
@@ -154,11 +156,65 @@ function readPdu(area, address, count) {
 
 const round = (n) => Math.round(n * 1000) / 1000;
 
+// The four byte/word orderings Modbus devices disagree on, named by where the
+// most-significant→least-significant bytes A,B,C,D land on the wire (Modbus
+// registers are big-endian, so word 0 carries bytes A,B):
+//   ABCD  big-endian            (high word first, big bytes)   — legacy 'big'
+//   CDAB  word-swapped          (low word first, big bytes)    — legacy 'little'
+//   BADC  byte-swapped          (high word first, swapped bytes)
+//   DCBA  little-endian         (low word first, swapped bytes)
+// For 64-bit values the same names generalize across four registers (word swap =
+// reverse word order; byte swap = swap the two bytes inside every word).
+export const BYTE_ORDERS = ['ABCD', 'CDAB', 'BADC', 'DCBA'];
+
+// Registers consumed per value.
+const WIDTH = { uint16: 1, int16: 1, uint32: 2, int32: 2, float32: 2, uint64: 4, int64: 4, float64: 4 };
+export function registerStride(format) { return WIDTH[format] || 1; }
+
+// Legacy word_order 'big'/'little' → canonical byte-order names.
+function canonOrder(order) {
+  if (order === 'big') return 'ABCD';
+  if (order === 'little') return 'CDAB';
+  return BYTE_ORDERS.includes(order) ? order : 'ABCD';
+}
+
+// Resolve the byte ordering from params: byte_order wins, legacy word_order is
+// accepted, default ABCD (big-endian).
+function orderOf(ctx) {
+  return canonOrder(ctx.params?.byte_order ?? ctx.params?.word_order ?? 'ABCD');
+}
+
+// Coerce a 64-bit integer input (BigInt, integer string, or Number) to BigInt
+// without the precision loss of routing large values through Number.
+function toBigInt(value) {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'string') return BigInt(value.trim().split('.')[0] || '0');
+  return BigInt(Math.trunc(Number(value)));
+}
+
+// Permute wire bytes (big-endian register concatenation) ↔ a normalized
+// big-endian buffer, per the ordering. Each ordering is its own inverse, so the
+// same function serves decode (wire→normalized) and encode (normalized→wire).
+function permuteBytes(src, order) {
+  const words = src.length / 2;
+  const out = Buffer.alloc(src.length);
+  for (let w = 0; w < words; w++) {
+    const hi = src[w * 2];
+    const lo = src[w * 2 + 1];
+    const swapBytes = order === 'BADC' || order === 'DCBA';
+    const swapWords = order === 'CDAB' || order === 'DCBA';
+    const dstWord = swapWords ? words - 1 - w : w;
+    out[dstWord * 2] = swapBytes ? lo : hi;
+    out[dstWord * 2 + 1] = swapBytes ? hi : lo;
+  }
+  return out;
+}
+
 // Render a decoded read as an address → value table (the UI draws any `tree`).
-// 32-bit formats stride two registers per value.
+// Wide formats stride multiple registers per value.
 function valueTree(area, address, decoded, format) {
   const isBits = area === 'coils' || area === 'discrete';
-  const stride = format === 'uint32' || format === 'int32' || format === 'float32' ? 2 : 1;
+  const stride = registerStride(format);
   const type = isBits ? 'bool' : format;
   return [{
     area: `${area} @${address}${!isBits && format !== 'uint16' ? ` · ${format}` : ''} · ${decoded.values.length} value(s)`,
@@ -166,35 +222,46 @@ function valueTree(area, address, decoded, format) {
   }];
 }
 
-// Reinterpret a raw uint16 register array as a wider numeric type. 32-bit types
-// combine register pairs; word_order 'big' = high word first (ABCD), 'little' =
-// low word first (CDAB) — the two conventions PLCs disagree on for the same float.
-export function interpretRegisters(regs, format = 'uint16', wordOrder = 'big') {
+// Reinterpret a raw uint16 register array as wider numeric types, honoring the
+// device's byte/word ordering (ABCD/CDAB/BADC/DCBA, or legacy big/little).
+// 32-bit types combine register pairs; 64-bit types combine four registers.
+export function interpretRegisters(regs, format = 'uint16', order = 'ABCD') {
+  order = canonOrder(order);
   if (format === 'uint16') return regs.slice();
   if (format === 'int16') return regs.map((r) => (r & 0x8000 ? r - 0x10000 : r));
+  const stride = registerStride(format);
   const out = [];
-  for (let i = 0; i + 1 < regs.length; i += 2) {
-    const hi = wordOrder === 'little' ? regs[i + 1] : regs[i];
-    const lo = wordOrder === 'little' ? regs[i] : regs[i + 1];
-    const u32 = (hi * 0x10000 + lo) >>> 0;
-    if (format === 'uint32') out.push(u32);
-    else if (format === 'int32') out.push(u32 | 0);
-    else if (format === 'float32') { const b = Buffer.alloc(4); b.writeUInt32BE(u32, 0); out.push(round(b.readFloatBE(0))); }
+  for (let i = 0; i + stride <= regs.length; i += stride) {
+    const wire = Buffer.alloc(stride * 2);
+    for (let w = 0; w < stride; w++) wire.writeUInt16BE(regs[i + w] & 0xffff, w * 2);
+    const b = permuteBytes(wire, order);
+    if (format === 'uint32') out.push(b.readUInt32BE(0));
+    else if (format === 'int32') out.push(b.readInt32BE(0));
+    else if (format === 'float32') out.push(round(b.readFloatBE(0)));
+    else if (format === 'float64') out.push(round(b.readDoubleBE(0)));
+    else if (format === 'uint64') { const v = b.readBigUInt64BE(0); out.push(v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString()); }
+    else if (format === 'int64') { const v = b.readBigInt64BE(0); out.push(v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v.toString()); }
   }
   return out;
 }
 
-// Encode a value into the uint16 registers that carry it. 32-bit formats span
-// two registers, ordered per word_order. Inverse of interpretRegisters.
-export function encodeRegisters(value, format = 'uint16', wordOrder = 'big') {
+// Encode a value into the uint16 registers that carry it, ordered per the same
+// byte/word ordering. Inverse of interpretRegisters (permuteBytes is symmetric).
+export function encodeRegisters(value, format = 'uint16', order = 'ABCD') {
+  order = canonOrder(order);
   if (format === 'uint16' || format === 'int16') return [value & 0xffff];
-  const b = Buffer.alloc(4);
+  const stride = registerStride(format);
+  const b = Buffer.alloc(stride * 2);
   if (format === 'float32') b.writeFloatBE(value, 0);
   else if (format === 'int32') b.writeInt32BE(value | 0, 0);
-  else b.writeUInt32BE(value >>> 0, 0);
-  const hi = b.readUInt16BE(0);
-  const lo = b.readUInt16BE(2);
-  return wordOrder === 'little' ? [lo, hi] : [hi, lo];
+  else if (format === 'uint32') b.writeUInt32BE(value >>> 0, 0);
+  else if (format === 'float64') b.writeDoubleBE(value, 0);
+  else if (format === 'int64') b.writeBigInt64BE(BigInt.asIntN(64, toBigInt(value)), 0);
+  else if (format === 'uint64') b.writeBigUInt64BE(BigInt.asUintN(64, toBigInt(value)), 0);
+  const wire = permuteBytes(b, order);
+  const regs = [];
+  for (let w = 0; w < stride; w++) regs.push(wire.readUInt16BE(w * 2));
+  return regs;
 }
 
 // FC16 Write Multiple Registers PDU.
@@ -208,7 +275,7 @@ function writeMultiplePdu(address, regs) {
   return pdu;
 }
 
-function decodeReadResponse(area, parsed, count, format = 'uint16', wordOrder = 'big') {
+function decodeReadResponse(area, parsed, count, format = 'uint16', order = 'ABCD') {
   if (parsed.exception || !parsed.data) return null;
   const body = parsed.data;
   const byteCount = body.readUInt8(0);
@@ -223,10 +290,10 @@ function decodeReadResponse(area, parsed, count, format = 'uint16', wordOrder = 
   }
   const regs = [];
   for (let i = 0; i + 1 < payload.length; i += 2) regs.push(payload.readUInt16BE(i));
-  return { type: 'registers', registers: regs, values: interpretRegisters(regs, format, wordOrder), format, word_order: wordOrder };
+  return { type: 'registers', registers: regs, values: interpretRegisters(regs, format, order), format, byte_order: canonOrder(order) };
 }
 
-async function doRead(ctx, area, address, count, format = 'uint16', wordOrder = 'big') {
+async function doRead(ctx, area, address, count, format = 'uint16', order = 'ABCD') {
   const timeout = ctx.params?.timeout ?? 3000;
   const { fc, pdu } = readPdu(area, address, count);
   const { request, response, connectMs, rttMs } = await transact(
@@ -237,7 +304,7 @@ async function doRead(ctx, area, address, count, format = 'uint16', wordOrder = 
     timeout,
   );
   const parsed = parseResponse(response, fc);
-  const decoded = decodeReadResponse(area, parsed, count, format, wordOrder);
+  const decoded = decodeReadResponse(area, parsed, count, format, order);
   return { request, response, parsed, decoded, connectMs, rttMs, area, address, count };
 }
 
@@ -353,10 +420,11 @@ export const verbs = {
     const address = ctx.params?.address ?? 0;
     const count = ctx.params?.count ?? 8;
     const format = ctx.params?.format ?? 'uint16';
-    const wordOrder = ctx.params?.word_order ?? 'big';
+    const order = orderOf(ctx);
     try {
-      const r = await doRead(ctx, area, address, count, format, wordOrder);
+      const r = await doRead(ctx, area, address, count, format, order);
       const isReg = r.decoded?.type === 'registers';
+      const wide = registerStride(format) > 1;
       return {
         artifact: makeArtifact({
           verb: 'read',
@@ -367,7 +435,7 @@ export const verbs = {
             address,
             count,
             format: isReg ? format : undefined,
-            word_order: isReg && format.endsWith('32') ? wordOrder : undefined,
+            byte_order: isReg && wide ? order : undefined,
             values: r.decoded ? r.decoded.values : null,
             registers: isReg && format !== 'uint16' ? r.decoded.registers : undefined,
             tree: r.decoded ? valueTree(area, address, r.decoded, format) : undefined,
@@ -392,11 +460,11 @@ export const verbs = {
     const address = ctx.params?.address ?? 0;
     const value = ctx.params?.value ?? 0;
     const format = ctx.params?.format ?? 'uint16';
-    const wordOrder = ctx.params?.word_order ?? 'big';
-    const wide = area !== 'coil' && (format === 'uint32' || format === 'int32' || format === 'float32');
+    const order = orderOf(ctx);
+    const stride = area === 'coil' ? 1 : registerStride(format);
     let current = null;
     try {
-      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, wide ? 2 : 1, format, wordOrder);
+      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, stride, format, order);
       current = rb.decoded ? rb.decoded.values[0] : null;
     } catch { /* current unknown */ }
     return {
@@ -418,9 +486,10 @@ export const verbs = {
     const address = ctx.params?.address ?? 0;
     const value = ctx.params?.value ?? 0;
     const format = ctx.params?.format ?? 'uint16';
-    const wordOrder = ctx.params?.word_order ?? 'big';
+    const order = orderOf(ctx);
     const timeout = ctx.params?.timeout ?? 3000;
-    const wide = area !== 'coil' && (format === 'uint32' || format === 'int32' || format === 'float32');
+    const stride = area === 'coil' ? 1 : registerStride(format);
+    const wide = area !== 'coil' && stride > 1;
 
     let pdu;
     let expectedFc;
@@ -431,8 +500,8 @@ export const verbs = {
       pdu.writeUInt16BE(value ? 0xff00 : 0x0000, 3);
       expectedFc = FC.WRITE_COIL;
     } else if (wide) {
-      // 32-bit value → two registers via FC16.
-      pdu = writeMultiplePdu(address, encodeRegisters(value, format, wordOrder));
+      // Wide value → two (32-bit) or four (64-bit) registers via FC16.
+      pdu = writeMultiplePdu(address, encodeRegisters(value, format, order));
       expectedFc = FC.WRITE_MULTIPLE;
     } else {
       pdu = Buffer.alloc(5);
@@ -454,14 +523,15 @@ export const verbs = {
     // Read-back verification (§4.1) so the artifact reports whether it took.
     let readBack = null;
     try {
-      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, wide ? 2 : 1, format, wordOrder);
+      const rb = await doRead(ctx, area === 'coil' ? 'coils' : 'holding', address, stride, format, order);
       readBack = rb.decoded ? rb.decoded.values[0] : null;
     } catch {
       readBack = null;
     }
     const expected = area === 'coil' ? (value ? 1 : 0) : value;
+    const isFloat = format === 'float32' || format === 'float64';
     const verified = readBack == null ? null
-      : format === 'float32' ? Math.abs(Number(readBack) - Number(expected)) < 0.01
+      : isFloat ? Math.abs(Number(readBack) - Number(expected)) < 0.01
       : Number(readBack) === Number(expected);
 
     return {
