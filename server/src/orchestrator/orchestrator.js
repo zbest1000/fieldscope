@@ -11,6 +11,8 @@
 
 import crypto from 'node:crypto';
 
+import { validateParams } from '../contract/contract.js';
+
 const ARM_TIMEOUT_MS = 5 * 60 * 1000; // auto-expire ARM after inactivity (§4.1)
 const DEFAULT_RATE = { capacity: 20, refillPerSec: 10 };
 
@@ -115,6 +117,7 @@ export class Orchestrator {
     if (verb === 'write') {
       throw new Error('writes must go through prepareWrite() + confirmWrite() (double-gate)');
     }
+    params = validateParams(driver.manifest.params?.[verb], params);
     this.#spendToken(rt);
 
     const ctx = this.#ctx(rt, params);
@@ -131,6 +134,7 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.verbs.diagnose) throw new Error(`${rt.driverId} has no diagnose verb`);
+    params = validateParams(driver.manifest.params?.diagnose, params);
     this.#spendToken(rt);
     const ctx = this.#ctx(rt, params);
     const res = await driver.verbs.diagnose(ctx);
@@ -158,6 +162,7 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.manifest.write_capable) throw new Error(`${rt.driverId} is not write-capable`);
+    params = validateParams(driver.manifest.params?.write, params);
 
     // A driver whose write isn't a single register/value (e.g. a PROFINET DCP
     // Set that reconfigures a station name or IP/subnet/gateway, or a DHCP lease
@@ -246,6 +251,7 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.verbs.monitorSample) throw new Error(`${rt.driverId} has no monitor`);
+    params = validateParams(driver.manifest.params?.monitor, params);
     const cadence = Math.max(250, params.cadence ?? 1000);
     const monitorId = `mon_${crypto.randomBytes(4).toString('hex')}`;
     const stats = { count: 0, ok: 0, min: Infinity, max: -Infinity, sum: 0, samples: [] };

@@ -178,6 +178,19 @@ async function main() {
     // Rendered as an address→value table; 32-bit values stride two registers.
     assert.deepStrictEqual(art.result.tree[0].points.map((p) => p.ref), ['holding:0', 'holding:2']);
   });
+  await test('out-of-range / invalid params are rejected before hitting the wire', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    // address max is 65535
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 99999 }), /address.*≤ 65535/);
+    // area must be one of the declared enum options
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { area: 'nonsense' }), /area.*must be one of/);
+    // a non-numeric count is rejected
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { count: 'lots' }), /count.*must be a number/);
+    // a valid read still works (regression), and undeclared params (timeout) pass through
+    const ok = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 2, timeout: 1500 });
+    assert.deepStrictEqual(ok.result.values, [1000, 1001]);
+  });
 
   await test('exception 0x0B produces the gateway-slave-dead verdict', async () => {
     const exSim = await startModbusSim({ port: 0, exception: 0x0b });
