@@ -434,6 +434,16 @@ async function main() {
     const art = await orchestrator.diagnose(ses.id);
     assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
   });
+  await test('browse enumerates the device object-list', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', {});
+    assert.strictEqual(art.result.objects, 5);
+    const names = art.decode.map((o) => o.type_name);
+    assert.ok(names.includes('device') && names.includes('analog-input') && names.includes('binary-output'));
+    const dev = art.decode.find((o) => o.type_name === 'device');
+    assert.strictEqual(dev.instance, 260001);
+  });
   await test('non-operational device produces the error verdict', async () => {
     const badSim = await startBacnetSim({ deviceInstance: 260002, vendorId: 5, systemStatus: 'non-operational' });
     const { orchestrator } = makeStack();

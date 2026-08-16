@@ -30,7 +30,7 @@ export const manifest = {
   lib: '🟢 raw BVLL/NPDU/APDU',
   describe:
     'Who-Is/I-Am identify (device instance, vendor, segmentation), device system-status health, ReadProperty.',
-  verbs: ['identify', 'read', 'monitor', 'diagnose'],
+  verbs: ['identify', 'browse', 'read', 'monitor', 'diagnose'],
   params: {
     read: {
       property: {
@@ -49,6 +49,15 @@ const PROP = {
   'vendor-name': 121,
   'model-name': 70,
   'vendor-identifier': 120,
+  'object-list': 76,
+};
+
+// BACnet object types (Clause 12) — the common ones an object-list enumerates.
+const OBJECT_TYPE_NAME = {
+  0: 'analog-input', 1: 'analog-output', 2: 'analog-value',
+  3: 'binary-input', 4: 'binary-output', 5: 'binary-value',
+  8: 'device', 10: 'file', 13: 'multi-state-input', 14: 'multi-state-output',
+  15: 'notification-class', 17: 'schedule', 19: 'multi-state-value', 20: 'trend-log',
 };
 
 // Device system-status enumeration (Clause 12.11.4).
@@ -227,6 +236,32 @@ function parseReadPropertyAck(buf, propName) {
   return { value };
 }
 
+// Parse a ReadProperty-ack whose value is the device object-list: a sequence of
+// application-tagged object identifiers between the opening/closing [3] tags.
+function parseObjectList(buf) {
+  const off = apduOffset(buf);
+  if (off < 0) return { error: 'short-frame' };
+  const pduType = buf[off] & 0xf0;
+  if (pduType === 0x50) return { error: 'bacnet-error' };
+  if (pduType !== 0x30) return { error: `unexpected PDU 0x${pduType.toString(16)}` };
+  let p = off + 3; // complex-ack, invoke, service
+  p = readTag(buf, p).next; // context tag 0 (object id)
+  p = readTag(buf, p).next; // context tag 1 (property id)
+  if (buf[p] === 0x3e) p += 1; // opening tag [3]
+  const objects = [];
+  while (p < buf.length && buf[p] !== 0x3f) {
+    const t = readTag(buf, p);
+    if (t.next <= p) break; // no progress → stop safely
+    if (t.tag === 12 && !t.isContext && t.value.length === 4) {
+      const id = uintFromBuf(t.value);
+      const type = id >>> 22;
+      objects.push({ type, type_name: OBJECT_TYPE_NAME[type] || `object-type ${type}`, instance: id & 0x3fffff });
+    }
+    p = t.next;
+  }
+  return { objects };
+}
+
 async function whoIs(ctx) {
   const timeout = ctx.params?.timeout ?? 3000;
   const request = buildWhoIs();
@@ -291,6 +326,49 @@ export const verbs = {
           result: { iam: null, error: err.code || err.message },
           error: err,
         }),
+        facts: errorFacts(err),
+      };
+    }
+  },
+
+  // Browse = ReadProperty of the device object-list → the objects the device
+  // exposes (analog/binary I/O, values, schedules, …), rendered as a table.
+  async browse(ctx) {
+    const timeout = ctx.params?.timeout ?? 3000;
+    try {
+      const who = await whoIs(ctx);
+      if (!who.iam) {
+        return {
+          artifact: makeArtifact({ verb: 'browse', raw: bytesRaw(who.request, who.response), result: { error: 'no I-Am — cannot address device object' } }),
+          facts: iamFacts(null, who.rttMs),
+        };
+      }
+      const { buf } = buildReadProperty(who.iam.device_instance, PROP['object-list']);
+      const { data, rttMs } = await udpRequest(ctx.host, ctx.port || 47808, buf, { timeout });
+      const parsed = parseObjectList(data);
+      const objects = parsed.objects || [];
+      return {
+        artifact: makeArtifact({
+          verb: 'browse',
+          raw: bytesRaw(buf, data),
+          decode: objects,
+          result: objects.length
+            ? {
+                device_instance: who.iam.device_instance,
+                objects: objects.length,
+                tree: [{
+                  area: `device ${who.iam.device_instance} · ${objects.length} object(s)`,
+                  points: objects.map((o) => ({ ref: `${o.type_name} ${o.instance}`, value: o.instance, type: `object-type ${o.type}` })),
+                }],
+                rtt_ms: rttMs,
+              }
+            : { objects: 0, error: parsed.error ?? null, note: 'no object-list returned' },
+        }),
+        facts: { transport: { udp_response: 'success' }, iam: { received: true, device_instance: who.iam.device_instance } },
+      };
+    } catch (err) {
+      return {
+        artifact: makeArtifact({ verb: 'browse', raw: `error: ${err.code || err.message}`, error: err }),
         facts: errorFacts(err),
       };
     }

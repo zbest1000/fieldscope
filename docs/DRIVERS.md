@@ -117,7 +117,9 @@ UDP test harness here.
 
 ### BACnet/IP · `bacnet.js` · udp 47808
 Who-Is / I-Am discovery + device-object read for **system status**. `read`
-pulls object properties. Flagship: a controller reporting non-operational.
+pulls object properties (system-status / object-name / vendor-name / model-name);
+`browse` reads the device **object-list** and enumerates its objects (analog /
+binary I/O, values, schedules …). Flagship: a controller reporting non-operational.
 
 ### DNP3 · `dnp3.js` · 20000
 Link-status addressing check + Class 0 integrity read. `identify` decodes the

@@ -102,6 +102,16 @@ function buildReadPropertyAck(invokeId, deviceInstance, propId, systemStatus) {
   } else if (propId === 70) {
     const s = Buffer.from('LGR-1000', 'utf8');
     value = Buffer.concat([Buffer.from([0x70 | 0x05, s.length + 1, 0x00]), s]);
+  } else if (propId === 76) {
+    // object-list: the device plus a handful of typical objects.
+    const ids = [
+      (8 << 22) | (deviceInstance & 0x3fffff), // device
+      (0 << 22) | 1, // analog-input 1
+      (2 << 22) | 1, // analog-value 1
+      (3 << 22) | 1, // binary-input 1
+      (4 << 22) | 1, // binary-output 1
+    ];
+    value = Buffer.concat(ids.map((id) => { const b = Buffer.alloc(5); b[0] = 0xc4; b.writeUInt32BE(id >>> 0, 1); return b; }));
   } else {
     value = Buffer.from([0x21, 0x00]);
   }
