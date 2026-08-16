@@ -24,16 +24,25 @@ export const manifest = {
   group: 'utility',
   transport: ['tcp'],
   default_port: 2404,
+  write_capable: true,
   mode: 'full',
   lib: '🟢 raw APCI/ASDU',
   describe:
-    'STARTDT activation + General Interrogation with COT verdicts (link not activated, wrong common address, GI rejected, points returned).',
-  verbs: ['connect', 'identify', 'browse', 'read', 'monitor', 'diagnose'],
+    'STARTDT activation + General Interrogation with COT verdicts (link not activated, wrong common address, GI rejected, points returned); single-command control with select-before-operate (ARM-gated).',
+  verbs: ['connect', 'identify', 'browse', 'read', 'write', 'monitor', 'diagnose'],
   params: {
     connect: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
     identify: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
     browse: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
     read: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
+    // Single command (C_SC_NA_1) with the select-before-operate safety handshake.
+    // `command` is the target state; `ioa` selects the controllable point.
+    write: {
+      command: { type: 'enum', options: ['on', 'off'], default: 'on' },
+      ioa: { type: 'number', default: 2001, min: 0, max: 16777215 },
+      common_address: { type: 'number', default: 1, min: 0, max: 65535 },
+      timeout: { type: 'number', default: 3000, min: 500, max: 10000 },
+    },
     monitor: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
     diagnose: { common_address: { type: 'number', default: 1, min: 0, max: 65535 }, timeout: { type: 'number', default: 3000, min: 500, max: 10000 } },
   },
@@ -86,6 +95,21 @@ export function buildInterrogationAsdu(commonAddress) {
   ]);
 }
 
+// Build a Single Command (C_SC_NA_1, type 45). `select` toggles the S/E bit:
+// select-before-operate sends SELECT (S/E=1) then EXECUTE (S/E=0). `scs` is the
+// command state (1 = on/close, 0 = off/open).
+export function buildSingleCommandAsdu(commonAddress, ioa, scs, select) {
+  const ca = Buffer.alloc(2); ca.writeUInt16LE(commonAddress & 0xffff, 0);
+  const sco = (select ? 0x80 : 0x00) | (scs ? 0x01 : 0x00);
+  return Buffer.concat([
+    Buffer.from([45, 0x01]), // C_SC_NA_1, VSQ = 1 object
+    Buffer.from([0x06, 0x00]), // COT = 6 (activation), originator 0
+    ca,
+    Buffer.from([ioa & 0xff, (ioa >> 8) & 0xff, (ioa >> 16) & 0xff]),
+    Buffer.from([sco]),
+  ]);
+}
+
 // ---- parsing ---------------------------------------------------------------
 // Split a byte stream into complete APDUs (start + length-prefixed).
 export function splitApdus(buf) {
@@ -101,7 +125,8 @@ export function splitApdus(buf) {
   return { frames, rest: buf.subarray(off) };
 }
 
-const ELEM = { 1: 1, 3: 1, 9: 3, 11: 3, 13: 5, 30: 8, 45: 2, 100: 2, 70: 1 };
+// Information-element size in bytes (the part after the 3-byte IOA).
+const ELEM = { 1: 1, 3: 1, 9: 3, 11: 3, 13: 5, 30: 8, 45: 1, 100: 1, 70: 1 };
 
 function decodeElement(typeId, buf) {
   switch (typeId) {
@@ -110,7 +135,8 @@ function decodeElement(typeId, buf) {
     case 9: return { value: buf.readInt16LE(0) / 32768, quality: qualityBits(buf[2]) }; // normalized
     case 11: return { value: buf.readInt16LE(0), quality: qualityBits(buf[2]) }; // scaled
     case 13: return { value: round(buf.readFloatLE(0)), quality: qualityBits(buf[4]) }; // short float
-    case 100: return { qoi: buf[1] };
+    case 45: return { scs: buf[0] & 0x01, select: !!(buf[0] & 0x80), qu: (buf[0] >> 2) & 0x1f }; // SCO
+    case 100: return { qoi: buf[0] };
     default: return { raw: buf.toString('hex') };
   }
 }
@@ -237,6 +263,44 @@ async function interrogate(ctx, timeout) {
   } finally { socket.destroy(); }
 }
 
+// Single-command control with select-before-operate on one connection: STARTDT,
+// SELECT (S/E=1) → activation-confirm, EXECUTE (S/E=0) → activation-confirm +
+// activation-termination. The confirm's P/N bit or a missing termination means
+// the station refused to operate the point.
+async function command(ctx, timeout) {
+  const commonAddress = ctx.params?.common_address ?? 1;
+  const ioa = ctx.params?.ioa ?? 0;
+  const scs = (ctx.params?.command ?? 'on') === 'on' ? 1 : 0;
+  const { socket, connectMs } = await tcpConnect(ctx.host, ctx.port || 2404, timeout);
+  let recv = 0;
+  const bump = (apdus) => { recv += apdus.filter((x) => x.format === 'I').length; return recv; };
+  try {
+    socket.write(buildU(U.STARTDT_act));
+    const s = await collect(socket, { until: (a) => a.some((x) => x.u === 'STARTDT_con'), timeout });
+    if (!s.apdus.some((x) => x.u === 'STARTDT_con')) return { connectMs, startdt_confirmed: false, ioa, scs, commonAddress };
+    bump(s.apdus);
+    // SELECT
+    socket.write(buildI(0, recv, buildSingleCommandAsdu(commonAddress, ioa, scs, true)));
+    const sel = await collect(socket, { until: (a) => a.some((x) => x.format === 'I' && x.asdu && x.asdu.type_id === 45 && x.asdu.cot === 7), timeout });
+    bump(sel.apdus);
+    const selCon = sel.apdus.find((x) => x.asdu && x.asdu.type_id === 45 && x.asdu.cot === 7);
+    const selected = !!selCon && !selCon.asdu.negative;
+    if (!selected) return { connectMs, startdt_confirmed: true, ioa, scs, commonAddress, selected: false };
+    // EXECUTE
+    socket.write(buildI(1, recv, buildSingleCommandAsdu(commonAddress, ioa, scs, false)));
+    const exe = await collect(socket, {
+      until: (a) => a.some((x) => x.asdu && x.asdu.type_id === 45 && (x.asdu.cot === 10 || (x.asdu.cot === 7 && x.asdu.negative))),
+      timeout,
+    });
+    const exeCon = exe.apdus.find((x) => x.asdu && x.asdu.type_id === 45 && x.asdu.cot === 7);
+    const term = exe.apdus.find((x) => x.asdu && x.asdu.type_id === 45 && x.asdu.cot === 10);
+    return {
+      connectMs, startdt_confirmed: true, ioa, scs, commonAddress,
+      selected: true, executed: !!exeCon && !exeCon.asdu.negative, terminated: !!term,
+    };
+  } finally { socket.destroy(); }
+}
+
 function analyzeGI(apdus) {
   const iFrames = apdus.filter((x) => x.format === 'I' && x.asdu && !x.asdu.error);
   const con = iFrames.find((x) => x.asdu.type_id === 100 && x.asdu.cot === 7);
@@ -337,6 +401,62 @@ export const verbs = {
   // Browse / Read = the General Interrogation point list as a table.
   async browse(ctx) { return readPoints(ctx); },
   async read(ctx) { return readPoints(ctx); },
+
+  // Gate-2 preview: read the target point's current state via GI so the confirm
+  // shows current → proposed. No command is sent here.
+  async previewWrite(ctx) {
+    const ioa = ctx.params?.ioa ?? 0;
+    const proposed = (ctx.params?.command ?? 'on') === 'on' ? 'ON (close)' : 'OFF (open)';
+    let current = null;
+    try {
+      const r = await interrogate(ctx, ctx.params?.timeout ?? 3000);
+      const pt = analyzeGI(r.apdus).points.find((p) => p.ioa === ioa && p.value != null && p.scs === undefined);
+      if (pt) current = pt.value ? 'ON (close)' : 'OFF (open)';
+    } catch { /* current unknown */ }
+    return {
+      point: `single command · IOA ${ioa}`,
+      current_value: current,
+      proposed_value: proposed,
+      target: `${ctx.host}:${ctx.port || 2404} · CA ${ctx.params?.common_address ?? 1}`,
+    };
+  },
+
+  // Single-command control (ARM-gated). Refuses unless the session is ARMED; the
+  // orchestrator only calls this after Gate 1 (ARM) + Gate 2 (per-write confirm).
+  async write(ctx) {
+    if (!ctx.armed) throw new Error('write refused: session not ARMED (double-gate, §4.1)');
+    const timeout = ctx.params?.timeout ?? 3000;
+    const r = await command(ctx, timeout);
+    const verified = !!(r.selected && r.executed && r.terminated);
+    const state = r.scs ? 'ON (close)' : 'OFF (open)';
+    return {
+      artifact: makeArtifact({
+        verb: 'write',
+        raw: `SELECT→con · EXECUTE→${r.executed ? 'con' : 'no-con'}${r.terminated ? '+term' : ''} · IOA ${r.ioa}=${state}`,
+        decode: r,
+        result: {
+          ioa: r.ioa,
+          command: state,
+          startdt_confirmed: r.startdt_confirmed,
+          selected: !!r.selected,
+          executed: !!r.executed,
+          terminated: !!r.terminated,
+          ack: !!r.executed,
+          read_back: verified ? state : null,
+          verified,
+          note: !r.startdt_confirmed ? 'STARTDT not confirmed' : (!r.selected ? 'station rejected SELECT (select-before-operate failed)' : undefined),
+        },
+      }),
+      facts: {},
+      audit: {
+        action: 'iec104-single-command',
+        target: `${ctx.host}:${ctx.port || 2404} · CA ${r.commonAddress}`,
+        point: `IOA ${r.ioa}`,
+        after_value: state,
+        before_value: ctx.beforeValue ?? null,
+      },
+    };
+  },
 
   async monitorSample(ctx) {
     const timeout = ctx.params?.timeout ?? 3000;

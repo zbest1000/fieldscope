@@ -481,9 +481,37 @@ async function main() {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
     const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
-    assert.strictEqual(art.result.points, 3);
+    assert.strictEqual(art.result.points, 4); // 3 measured + 1 single-point (breaker)
     const refs = art.result.tree[0].points.map((p) => p.ref);
-    assert.ok(refs.includes('IOA 1001'));
+    assert.ok(refs.includes('IOA 1001') && refs.includes('IOA 2001'));
+  });
+  await test('single command drives the point through select-before-operate (double-gate)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { command: 'on', ioa: 2001, common_address: 1, timeout: 1500 });
+    assert.strictEqual(prep.current_value, 'OFF (open)'); // breaker starts open
+    assert.strictEqual(prep.proposed_value, 'ON (close)');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.selected, true);
+    assert.strictEqual(art.result.executed, true);
+    assert.strictEqual(art.result.terminated, true);
+    assert.strictEqual(art.result.verified, true);
+    // Read back: the breaker (IOA 2001) is now closed (value 1).
+    const rb = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    const breaker = rb.result.tree[0].points.find((p) => p.ref === 'IOA 2001');
+    assert.strictEqual(String(breaker.value), '1');
+  });
+  await test('a station that rejects SELECT fails the command safely', async () => {
+    const noSim = await startIec104Sim({ commandNegative: true });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: noSim.port });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { command: 'on', ioa: 2001, common_address: 1, timeout: 1200 });
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.selected, false);
+    assert.strictEqual(art.result.verified, false);
+    noSim.close();
   });
   await test('healthy station diagnoses confirmed', async () => {
     const { orchestrator } = makeStack();

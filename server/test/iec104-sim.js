@@ -27,13 +27,23 @@ function asduFloatData(cot, commonAddress, points) {
   });
   return Buffer.concat([asduHead(13, points.length, cot, commonAddress), ...bodies]);
 }
+function asduSinglePointData(cot, commonAddress, points) {
+  const bodies = points.map((p) => Buffer.concat([ioaBytes(p.ioa), Buffer.from([p.value & 0x01])])); // SIQ
+  return Buffer.concat([asduHead(1, points.length, cot, commonAddress), ...bodies]);
+}
+function asduCommandReply(cot, commonAddress, ioa, sco) {
+  // C_SC_NA_1 confirmation/termination echoes the IOA + SCO.
+  return Buffer.concat([asduHead(45, 1, cot, commonAddress), ioaBytes(ioa), Buffer.from([sco & 0xff])]);
+}
 
-export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, giNegative = false, points = null } = {}) {
+export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, giNegative = false, points = null, commandNegative = false } = {}) {
   const pts = points || [
     { ioa: 1001, value: 230.4 }, // busbar voltage
     { ioa: 1002, value: 12.7 }, // feeder current
     { ioa: 1003, value: 50.02 }, // frequency
   ];
+  const singlePoints = [{ ioa: 2001, value: 0 }]; // a controllable breaker (open)
+  const spOf = (ioa) => singlePoints.find((p) => p.ioa === ioa);
   const server = net.createServer((socket) => {
     let pending = Buffer.alloc(0);
     let ns = 0; // our send sequence
@@ -71,8 +81,24 @@ export function startIec104Sim({ port = 0, commonAddress = 1, startdt = true, gi
             return;
           }
           sendI(asduInterrogationReply(7, commonAddress)); // activation confirmation
-          sendI(asduFloatData(20, commonAddress, pts)); // interrogated data
+          sendI(asduFloatData(20, commonAddress, pts)); // interrogated measured data
+          sendI(asduSinglePointData(20, commonAddress, singlePoints)); // interrogated status
           sendI(asduInterrogationReply(10, commonAddress)); // activation termination
+          return;
+        }
+        // Single command (C_SC_NA_1) with select-before-operate.
+        if (apdu.asdu.type_id === 45 && apdu.asdu.cot === 6) {
+          const obj = apdu.asdu.objects[0] || {};
+          const sco = (obj.select ? 0x80 : 0x00) | (obj.scs ? 0x01 : 0x00);
+          if (commandNegative) { sendI(asduCommandReply(7 | 0x40, commonAddress, obj.ioa, sco)); return; }
+          if (obj.select) {
+            sendI(asduCommandReply(7, commonAddress, obj.ioa, sco)); // SELECT confirmed
+          } else {
+            const sp = spOf(obj.ioa);
+            if (sp) sp.value = obj.scs; // EXECUTE: operate the point
+            sendI(asduCommandReply(7, commonAddress, obj.ioa, sco)); // EXECUTE confirmed
+            sendI(asduCommandReply(10, commonAddress, obj.ioa, sco)); // activation termination
+          }
         }
       }
     }
