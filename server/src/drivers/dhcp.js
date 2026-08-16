@@ -37,6 +37,7 @@ export const manifest = {
     // asking for `requested_ip` (blank → take whatever the server offers). Gated
     // behind ARM + confirm (§4.1) since it changes lease state on the server.
     write: {
+      mode: { type: 'enum', options: ['dhcp', 'bootp'], default: 'dhcp' },
       mac: { type: 'string', default: '' },
       requested_ip: { type: 'string', default: '' },
       server: { type: 'string', default: '255.255.255.255' },
@@ -93,6 +94,16 @@ export function buildRequest({ mac, xid, requestedIp, serverId }) {
   opts.push(55, 4, 1, 3, 6, 15); // parameter request list
   opts.push(255);
   return Buffer.concat([buf, Buffer.from(opts)]);
+}
+
+// Classic BOOTP (RFC 951): a single BOOTREQUEST. No DHCP message-type option and
+// no lease — the server maps the client's MAC to an address from a static table
+// and answers with one BOOTREPLY. This is the mechanism the EtherNet/IP world's
+// "BOOTP/DHCP tool" uses to hand a device its first IP (PROFINET uses DCP Set
+// instead). Returns a Buffer.
+export function buildBootpRequest({ mac, xid }) {
+  const buf = bootpBase(mac, xid);
+  return Buffer.concat([buf, Buffer.from([255])]); // magic cookie + End only
 }
 
 function parseMac(s) {
@@ -190,6 +201,7 @@ function discover(ctx) {
 // wanted (or offered) IP, and read the ACK/NAK — the DORA cycle a BOOTP/DHCP
 // commissioning tool runs to hand a device its address.
 function assign(ctx) {
+  const mode = ctx.params?.mode || 'dhcp';
   const server = ctx.params?.server || '255.255.255.255';
   const serverPort = ctx.params?.server_port ?? 67;
   const clientPort = ctx.params?.client_port ?? 0;
@@ -202,7 +214,7 @@ function assign(ctx) {
 
   return new Promise((resolve) => {
     const sock = dgram.createSocket('udp4');
-    let stage = 'discover';
+    let stage = mode === 'bootp' ? 'bootp' : 'discover';
     let offer = null;
     let ack = null;
     let settled = false;
@@ -211,12 +223,17 @@ function assign(ctx) {
       settled = true;
       clearTimeout(timer);
       try { sock.close(); } catch { /* already closed */ }
-      resolve({ offer, ack, mac, requestedIp: wantIp, error: err || null });
+      resolve({ mode, offer, ack, mac, requestedIp: wantIp, error: err || null });
     };
     sock.on('error', (e) => finish(e.code || e.message));
     sock.on('message', (msg) => {
       const r = parseReply(msg);
       if (!r || r.xid !== xidNum) return;
+      if (mode === 'bootp') {
+        // A BOOTREPLY carries the address in yiaddr with no DHCP message-type.
+        if (r.your_ip && r.your_ip !== '0.0.0.0') { ack = { ...r, message_type: 'BOOTREPLY' }; finish(null); }
+        return;
+      }
       if (r.message_type === 'OFFER' && stage === 'discover') {
         offer = r;
         stage = 'request';
@@ -228,10 +245,10 @@ function assign(ctx) {
       }
     });
     const timer = setTimeout(() => finish(null), windowMs);
-    const { buf } = buildDiscover(mac, xid);
+    const first = mode === 'bootp' ? buildBootpRequest({ mac, xid }) : buildDiscover(mac, xid).buf;
     sock.bind(clientPort, () => {
       try { if (broadcast) sock.setBroadcast(true); } catch { /* not permitted */ }
-      sock.send(buf, serverPort, server, (e) => { if (e) finish(e.code || e.message); });
+      sock.send(first, serverPort, server, (e) => { if (e) finish(e.code || e.message); });
     });
   });
 }
@@ -303,16 +320,20 @@ export const verbs = {
   async write(ctx) {
     if (!ctx.armed) throw new Error('write refused: session not ARMED (double-gate, §4.1)');
     const res = await assign(ctx);
-    const acked = res.ack?.message_type === 'ACK';
+    const acked = res.ack?.message_type === 'ACK' || res.ack?.message_type === 'BOOTREPLY';
     const assigned = acked ? res.ack.your_ip : null;
     const requested = ctx.params?.requested_ip || res.offer?.your_ip || null;
     const verified = assigned != null && (!ctx.params?.requested_ip || assigned === ctx.params.requested_ip);
+    const raw = res.mode === 'bootp'
+      ? `BOOTREQUEST → ${res.ack?.message_type || 'no reply'} ${assigned || ''}${res.error ? ` · ${res.error}` : ''}`
+      : `DISCOVER→OFFER ${res.offer?.your_ip || '—'} · REQUEST→${res.ack?.message_type || 'no reply'} ${assigned || ''}${res.error ? ` · ${res.error}` : ''}`;
     return {
       artifact: makeArtifact({
         verb: 'write',
-        raw: `DISCOVER→OFFER ${res.offer?.your_ip || '—'} · REQUEST→${res.ack?.message_type || 'no reply'} ${assigned || ''}${res.error ? ` · ${res.error}` : ''}`,
-        decode: { offer: res.offer, ack: res.ack },
+        raw,
+        decode: { mode: res.mode, offer: res.offer, ack: res.ack },
         result: {
+          mode: res.mode,
           mac: macStr(res.mac),
           requested,
           offered: res.offer?.your_ip || null,
@@ -327,7 +348,7 @@ export const verbs = {
       }),
       facts: {},
       audit: {
-        action: 'dhcp-assign',
+        action: `${res.mode}-assign`,
         target: ctx.params?.server || 'broadcast',
         point: `mac ${macStr(res.mac)}`,
         after_value: assigned,

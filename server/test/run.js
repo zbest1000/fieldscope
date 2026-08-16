@@ -667,6 +667,18 @@ async function main() {
     assert.strictEqual(art.result.verified, true);
     assert.strictEqual(art.result.mac, 'aa:bb:cc:11:22:33');
   });
+  await test('classic BOOTP assigns a MAC its address in one request/reply', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { mode: 'bootp', mac: 'de:ad:be:ef:00:01', server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.mode, 'bootp');
+    assert.strictEqual(art.result.ack, true); // BOOTREPLY
+    assert.strictEqual(art.result.read_back, '10.10.0.50');
+    assert.strictEqual(art.result.lease_seconds, null); // BOOTP has no lease
+  });
   dhcpSim.close();
 
   // ---- PROFINET DCP (PRONETA-style) ----
@@ -676,7 +688,7 @@ async function main() {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
     const art = await orchestrator.runVerb(ses.id, 'identify', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
-    assert.strictEqual(art.result.devices, 2);
+    assert.strictEqual(art.result.devices, 3);
     const plc = art.decode.find((d) => d.name_of_station === 'plc-line3');
     assert.strictEqual(plc.ip, '192.168.0.10');
     assert.strictEqual(plc.role, 'IO-Controller');
@@ -711,15 +723,33 @@ async function main() {
     assert.strictEqual(art.verdicts[0].rule_id, 'unconfigured-ip');
     newSim.close();
   });
-  await test('browse renders a topology (segment → controller → device)', async () => {
+  await test('browse builds a physical port topology from LLDP (which port cables to what)', async () => {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
     const art = await orchestrator.runVerb(ses.id, 'browse', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
     const t = art.result.topology;
-    assert.ok(t.nodes.some((n) => n.kind === 'controller' && n.label === 'plc-line3'));
-    assert.ok(t.nodes.some((n) => n.kind === 'device' && n.label === 'io-station-1'));
-    assert.ok(t.nodes.some((n) => n.kind === 'segment'));
-    assert.ok(t.edges.length >= 2); // controller hangs off segment; device hangs off controller
+    assert.strictEqual(t.kind, 'physical');
+    // The PLC's X1 P2 carries a device, exposed as a linked port on the node.
+    const plc = t.nodes.find((n) => n.label === 'plc-line3');
+    assert.strictEqual(plc.kind, 'controller');
+    assert.ok(plc.ports.some((p) => p.name === 'X1 P2' && p.linked));
+    // The line PLC—dev1—dev2 collapses to two deduped port-to-port cables.
+    assert.strictEqual(t.links.length, 2);
+    const cable = t.links.find((l) => [l.a.station, l.b.station].sort().join() === ['io-station-1', 'plc-line3'].sort().join());
+    assert.ok(cable, 'expected a plc-line3 ↔ io-station-1 cable');
+    const ports = [cable.a.port, cable.b.port].sort();
+    assert.deepStrictEqual(ports, ['X1 P1', 'X1 P2']);
+  });
+  await test('logical fallback when no LLDP neighbours are present', async () => {
+    const flatSim = await startProfinetDcpSim({
+      devices: [{ name: 'lonely-dev', ip: '10.0.0.5', subnet: '255.255.255.0', vendor: 'Acme', role: 0x01 }], // no ports
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { responder: '127.0.0.1', responder_port: flatSim.port, window_ms: 700 });
+    assert.strictEqual(art.result.topology.kind, 'logical');
+    assert.ok(art.result.topology.nodes.some((n) => n.kind === 'segment'));
+    flatSim.close();
   });
   await test('DCP Set assigns IP / subnet / gateway (through the double-gate, with read-back)', async () => {
     const cfgSim = await startProfinetDcpSim({

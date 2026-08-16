@@ -79,6 +79,18 @@ export function startDhcpSim({ port = 0, offers = null } = {}) {
         const inScope = !cfg.pool || cfg.pool.includes(yourIp);
         sock.send(buildReply(inScope ? 5 : 6, xid, chaddr, { ...cfg, yourIp }), rinfo.port, rinfo.address);
       }
+    } else if (msgType === undefined) {
+      // Classic BOOTP (no DHCP message-type): static MAC→IP, single BOOTREPLY,
+      // no options/lease. Reply from the first configured server.
+      const cfg = configs[0];
+      const buf = Buffer.alloc(240);
+      buf[0] = 2; buf[1] = 1; buf[2] = 6;
+      xid.copy(buf, 4);
+      ipBytes(cfg.yourIp).copy(buf, 16);
+      ipBytes(cfg.serverId).copy(buf, 20);
+      chaddr.copy(buf, 28, 0, 6);
+      MAGIC.copy(buf, 236);
+      sock.send(Buffer.concat([buf, Buffer.from([255])]), rinfo.port, rinfo.address);
     }
   });
 

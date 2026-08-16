@@ -120,26 +120,158 @@ function ResultView({ verb, result }) {
   return <Json data={result} />;
 }
 
-// PROFINET DCP topology map: a layered graph (segment → controller → devices)
-// laid out deterministically, drawn as inline SVG so it needs no chart library.
+const TOPO_KIND = {
+  segment: { fill: '#0f1720', stroke: '#334155', text: '#94a3b8', tag: 'subnet' },
+  controller: { fill: 'rgba(16,185,129,0.10)', stroke: '#10b981', text: '#6ee7b7', tag: 'IO-Controller' },
+  supervisor: { fill: 'rgba(139,92,246,0.10)', stroke: '#8b5cf6', text: '#c4b5fd', tag: 'PN-Supervisor' },
+  device: { fill: 'rgba(56,189,248,0.08)', stroke: '#38bdf8', text: '#7dd3fc', tag: 'IO-Device' },
+  switch: { fill: 'rgba(148,163,184,0.08)', stroke: '#64748b', text: '#cbd5e1', tag: 'switch' },
+};
+
+function TopoWarnings({ extra, note }) {
+  return (
+    <>
+      {(extra?.duplicate_names?.length > 0 || extra?.unconfigured?.length > 0) && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {extra.duplicate_names?.length > 0 && (
+            <span className="rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 px-2 py-1 flex items-center gap-1.5">
+              <Icon name="warn" size={12} /> duplicate name: {extra.duplicate_names.join(', ')}
+            </span>
+          )}
+          {extra.unconfigured?.length > 0 && (
+            <span className="rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 px-2 py-1 flex items-center gap-1.5">
+              <Icon name="warn" size={12} /> unconfigured (no IP): {extra.unconfigured.join(', ')}
+            </span>
+          )}
+        </div>
+      )}
+      {note && <p className="text-[11px] text-slate-600 leading-relaxed">{note}</p>}
+    </>
+  );
+}
+
+// PROFINET DCP topology map. Physical (LLDP) draws device boxes with their ports
+// and the port-to-port cabling — PRONETA's headline view. Logical (DCP-only) is
+// the subnet → controller → device fallback when no LLDP neighbours are seen.
 function TopologyView({ topo, extra }) {
-  const nodes = topo.nodes || [];
-  const edges = topo.edges || [];
-  if (nodes.length === 0) {
+  if ((topo.nodes || []).length === 0) {
     return <EmptyState title="No devices on the segment" icon="layers">{topo.note || 'Run Identify-All against a segment with devices.'}</EmptyState>;
   }
-  const KIND = {
-    segment: { fill: '#0f1720', stroke: '#334155', text: '#94a3b8', icon: 'layers', tag: 'subnet' },
-    controller: { fill: 'rgba(16,185,129,0.10)', stroke: '#10b981', text: '#6ee7b7', icon: 'bolt', tag: 'IO-Controller' },
-    supervisor: { fill: 'rgba(139,92,246,0.10)', stroke: '#8b5cf6', text: '#c4b5fd', icon: 'shield', tag: 'PN-Supervisor' },
-    device: { fill: 'rgba(56,189,248,0.08)', stroke: '#38bdf8', text: '#7dd3fc', icon: 'plug', tag: 'IO-Device' },
-  };
+  return topo.kind === 'physical' ? <PhysicalTopology topo={topo} extra={extra} /> : <LogicalTopology topo={topo} extra={extra} />;
+}
+
+// LLDP port-level graph: boxes carry their ports; cables join specific ports.
+function PhysicalTopology({ topo, extra }) {
+  const nodes = topo.nodes;
+  const links = topo.links || [];
+  const byName = Object.fromEntries(nodes.map((n) => [n.label, n]));
+  // Depth = hops from a controller, over the LLDP link graph (BFS).
+  const adj = new Map(nodes.map((n) => [n.label, []]));
+  for (const l of links) { adj.get(l.a.station)?.push(l.b.station); adj.get(l.b.station)?.push(l.a.station); }
+  const depth = new Map();
+  const roots = nodes.filter((n) => n.kind === 'controller').map((n) => n.label);
+  const queue = [...(roots.length ? roots : [nodes[0].label])];
+  queue.forEach((r) => depth.set(r, 0));
+  while (queue.length) {
+    const s = queue.shift();
+    for (const nb of adj.get(s) || []) if (!depth.has(nb)) { depth.set(nb, depth.get(s) + 1); queue.push(nb); }
+  }
+  for (const n of nodes) if (!depth.has(n.label)) depth.set(n.label, 0);
+
+  const NW = 224;
+  const HEADER = 42;
+  const PORTH = 24;
+  const PADB = 12;
+  const GAP = 26;
+  const COLW = NW + 78;
+  const nodeH = (n) => HEADER + Math.max(1, n.ports.length) * PORTH + PADB;
+  const byDepth = new Map();
+  for (const n of nodes) { const d = depth.get(n.label); (byDepth.get(d) || byDepth.set(d, []).get(d)).push(n); }
+  const pos = {};
+  let maxY = 0;
+  for (const [d, ns] of [...byDepth.entries()].sort((a, b) => a[0] - b[0])) {
+    let y = 22;
+    for (const n of ns) { pos[n.label] = { x: 24 + d * COLW, y, node: n }; y += nodeH(n) + GAP; }
+    maxY = Math.max(maxY, y);
+  }
+  const maxDepth = Math.max(...[...byDepth.keys()]);
+  const W = 24 + (maxDepth + 1) * COLW;
+  const H = Math.max(maxY, 120);
+  const portIndex = (n, port) => Math.max(0, n.ports.findIndex((p) => p.name === port));
+  const chipY = (p, idx) => p.y + HEADER + idx * PORTH + PORTH / 2;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400">
+        <Icon name="layers" size={13} className="text-slate-500" /> Physical topology · LLDP
+        <span className="ml-auto normal-case text-slate-600">{nodes.length} devices · {links.length} cables</span>
+      </div>
+      <div className="rounded-lg border border-edge bg-ink overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: Math.min(W, 900), height: H }}>
+          {/* cables between specific ports */}
+          {links.map((l, i) => {
+            const pa = pos[l.a.station];
+            const pb = pos[l.b.station];
+            if (!pa || !pb) return null;
+            const da = depth.get(l.a.station);
+            const db = depth.get(l.b.station);
+            const aRight = da <= db;
+            const ax = aRight ? pa.x + NW : pa.x;
+            const bx = aRight ? pb.x : pb.x + NW;
+            const ay = chipY(pa, portIndex(pa.node, l.a.port));
+            const by = chipY(pb, portIndex(pb.node, l.b.port));
+            const dx = Math.max(40, Math.abs(bx - ax) / 2);
+            const c1 = ax + (aRight ? dx : -dx);
+            const c2 = bx + (aRight ? -dx : dx);
+            return (
+              <g key={i}>
+                <path d={`M${ax},${ay} C${c1},${ay} ${c2},${by} ${bx},${by}`} fill="none" stroke="#2f7d5b" strokeWidth="2" />
+                <circle cx={ax} cy={ay} r="3" fill="#34d399" />
+                <circle cx={bx} cy={by} r="3" fill="#34d399" />
+              </g>
+            );
+          })}
+          {/* device boxes with ports */}
+          {nodes.map((n) => {
+            const p = pos[n.label];
+            const k = TOPO_KIND[n.kind] || TOPO_KIND.device;
+            const h = nodeH(n);
+            return (
+              <g key={n.label} transform={`translate(${p.x},${p.y})`}>
+                <rect width={NW} height={h} rx="9" fill={k.fill} stroke={k.stroke} strokeWidth="1.5" />
+                <text x="12" y="18" fontSize="13" fontWeight="700" fill={k.text} style={{ fontFamily: 'ui-monospace, monospace' }}>{(n.label || '').slice(0, 24)}</text>
+                <text x="12" y="33" fontSize="10" fill="#64748b" style={{ fontFamily: 'ui-monospace, monospace' }}>{`${n.ip || 'no IP'} · ${k.tag}`}</text>
+                <line x1="0" x2={NW} y1={HEADER - 4} y2={HEADER - 4} stroke={k.stroke} strokeWidth="1" opacity="0.4" />
+                {n.ports.map((port, i) => {
+                  const y = HEADER + i * PORTH;
+                  return (
+                    <g key={port.name} transform={`translate(0,${y})`}>
+                      <rect x="8" y="2" width={NW - 16} height={PORTH - 5} rx="5" fill={port.linked ? 'rgba(52,211,153,0.08)' : 'transparent'} stroke={port.linked ? '#2f7d5b' : '#334155'} strokeWidth="1" strokeDasharray={port.linked ? '0' : '3 3'} />
+                      <circle cx="18" cy={PORTH / 2} r="3" fill={port.linked ? '#34d399' : '#475569'} />
+                      <text x="30" y={PORTH / 2 + 3.5} fontSize="11" fill={port.linked ? '#a7f3d0' : '#94a3b8'} style={{ fontFamily: 'ui-monospace, monospace' }}>{port.name}</text>
+                      <text x={NW - 16} y={PORTH / 2 + 3.5} fontSize="9" textAnchor="end" fill={port.linked ? '#4b8f6f' : '#475569'} style={{ fontFamily: 'ui-monospace, monospace' }}>{port.linked ? 'linked' : 'free'}</text>
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <TopoWarnings extra={extra} note={topo.note} />
+    </div>
+  );
+}
+
+// DCP-only fallback: a layered segment → controller → devices graph.
+function LogicalTopology({ topo, extra }) {
+  const nodes = topo.nodes || [];
+  const edges = topo.edges || [];
   const COL = { segment: 0, controller: 1, supervisor: 1, device: 2 };
   const colX = [30, 300, 570];
   const NW = 200;
   const NH = 50;
   const GAP = 22;
-  // Stack nodes within their column in declared order.
   const counts = [0, 0, 0];
   const pos = {};
   for (const n of nodes) {
@@ -154,7 +286,7 @@ function TopologyView({ topo, extra }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-slate-400">
-        <Icon name="layers" size={13} className="text-slate-500" /> Segment topology
+        <Icon name="layers" size={13} className="text-slate-500" /> Logical topology · DCP
         <span className="ml-auto normal-case text-slate-600">{nodes.filter((n) => n.kind !== 'segment').length} devices</span>
       </div>
       <div className="rounded-lg border border-edge bg-ink overflow-x-auto">
@@ -170,36 +302,18 @@ function TopologyView({ topo, extra }) {
           })}
           {nodes.map((n) => {
             const p = pos[n.id];
-            const k = KIND[n.kind] || KIND.device;
+            const k = TOPO_KIND[n.kind] || TOPO_KIND.device;
             return (
               <g key={n.id} transform={`translate(${p.x},${p.y})`}>
                 <rect width={NW} height={NH} rx="8" fill={k.fill} stroke={k.stroke} strokeWidth="1.5" />
-                <text x="12" y="21" fontSize="13" fontWeight="600" fill={k.text} style={{ fontFamily: 'ui-monospace, monospace' }}>
-                  {(n.label || '').slice(0, 22)}
-                </text>
-                <text x="12" y="38" fontSize="10.5" fill="#64748b" style={{ fontFamily: 'ui-monospace, monospace' }}>
-                  {n.kind === 'segment' ? k.tag : `${n.ip || 'no IP'}${n.role ? ' · ' + n.role : ''}`}
-                </text>
+                <text x="12" y="21" fontSize="13" fontWeight="600" fill={k.text} style={{ fontFamily: 'ui-monospace, monospace' }}>{(n.label || '').slice(0, 22)}</text>
+                <text x="12" y="38" fontSize="10.5" fill="#64748b" style={{ fontFamily: 'ui-monospace, monospace' }}>{n.kind === 'segment' ? k.tag : `${n.ip || 'no IP'}${n.role ? ' · ' + n.role : ''}`}</text>
               </g>
             );
           })}
         </svg>
       </div>
-      {(extra?.duplicate_names?.length > 0 || extra?.unconfigured?.length > 0) && (
-        <div className="flex flex-wrap gap-2 text-xs">
-          {extra.duplicate_names?.length > 0 && (
-            <span className="rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-300 px-2 py-1 flex items-center gap-1.5">
-              <Icon name="warn" size={12} /> duplicate name: {extra.duplicate_names.join(', ')}
-            </span>
-          )}
-          {extra.unconfigured?.length > 0 && (
-            <span className="rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-300 px-2 py-1 flex items-center gap-1.5">
-              <Icon name="warn" size={12} /> unconfigured (no IP): {extra.unconfigured.join(', ')}
-            </span>
-          )}
-        </div>
-      )}
-      {topo.note && <p className="text-[11px] text-slate-600 leading-relaxed">{topo.note}</p>}
+      <TopoWarnings extra={extra} note={topo.note} />
     </div>
   );
 }

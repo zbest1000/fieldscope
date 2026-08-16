@@ -8,6 +8,29 @@ import dgram from 'node:dgram';
 
 const FRAME_ID_IDENTIFY_RES = 0xfeff;
 const FRAME_ID_GETSET = 0xfefd;
+const LLDP_MARK = 0x88cc;
+const PNO_OUI = Buffer.from([0x00, 0x0e, 0xcf]);
+const PNO_SUB_PEER = 0x51;
+
+function lldpTlv(type, value) {
+  const hdr = Buffer.alloc(2);
+  hdr.writeUInt16BE(((type & 0x7f) << 9) | (value.length & 0x1ff), 0);
+  return Buffer.concat([hdr, value]);
+}
+
+// One LLDP frame: local chassis (station) + port, plus the learned remote peer.
+function buildLldpFrame({ station, portId, portDesc, remoteStation, remotePort }) {
+  const tlvs = [
+    lldpTlv(1, Buffer.concat([Buffer.from([0x07]), Buffer.from(station, 'latin1')])), // Chassis ID (locally assigned)
+    lldpTlv(2, Buffer.concat([Buffer.from([0x07]), Buffer.from(portId, 'latin1')])), // Port ID
+    lldpTlv(3, Buffer.from([0x00, 0x78])), // TTL 120
+    lldpTlv(4, Buffer.from(portDesc, 'latin1')), // Port Description
+    lldpTlv(5, Buffer.from(station, 'latin1')), // System Name
+  ];
+  if (remoteStation) tlvs.push(lldpTlv(127, Buffer.concat([PNO_OUI, Buffer.from([PNO_SUB_PEER]), Buffer.from(`${remoteStation}\x00${remotePort}`, 'latin1')]))); // learned peer
+  tlvs.push(lldpTlv(0, Buffer.alloc(0))); // End
+  return Buffer.concat([Buffer.from([(LLDP_MARK >> 8) & 0xff, LLDP_MARK & 0xff]), ...tlvs]);
+}
 
 function block(option, suboption, payload) {
   // Response block: option, suboption, len(2), BlockInfo(2), payload; padded even.
@@ -90,14 +113,45 @@ function buildSetResponse(xid, setOption, setSub, blockError) {
 
 export function startProfinetDcpSim({ port = 0, devices = null } = {}) {
   const list = devices || [
-    { name: 'plc-line3', ip: '192.168.0.10', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, SIMATIC', vendorId: 0x002a, deviceId: 0x0301, role: 0x02 },
-    { name: 'io-station-1', ip: '192.168.0.20', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, ET200SP', vendorId: 0x002a, deviceId: 0x0401, role: 0x01 },
+    // A short PROFINET line: PLC ─(X1 P2)──(X1 P1)─ ET200SP ─(X1 P2)──(X1 P1)─ ET200SP.
+    // `ports` carries each port's learned LLDP neighbour (station + remote port).
+    {
+      name: 'plc-line3', ip: '192.168.0.10', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, SIMATIC', vendorId: 0x002a, deviceId: 0x0301, role: 0x02,
+      ports: [
+        { id: 'port-001', desc: 'X1 P1', remote: null }, // free / available
+        { id: 'port-002', desc: 'X1 P2', remote: { station: 'io-station-1', port: 'X1 P1' } },
+      ],
+    },
+    {
+      name: 'io-station-1', ip: '192.168.0.20', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, ET200SP', vendorId: 0x002a, deviceId: 0x0401, role: 0x01,
+      ports: [
+        { id: 'port-001', desc: 'X1 P1', remote: { station: 'plc-line3', port: 'X1 P2' } },
+        { id: 'port-002', desc: 'X1 P2', remote: { station: 'io-station-2', port: 'X1 P1' } },
+      ],
+    },
+    {
+      name: 'io-station-2', ip: '192.168.0.21', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, ET200SP', vendorId: 0x002a, deviceId: 0x0401, role: 0x01,
+      ports: [
+        { id: 'port-001', desc: 'X1 P1', remote: { station: 'io-station-1', port: 'X1 P2' } },
+        { id: 'port-002', desc: 'X1 P2', remote: null }, // free / available (end of line)
+      ],
+    },
   ];
   const sock = dgram.createSocket({ type: 'udp4', reuseAddr: true });
 
   sock.on('message', (msg, rinfo) => {
-    if (msg.length < 12) return;
+    if (msg.length < 4) return;
     const frameId = msg.readUInt16BE(0);
+    if (frameId === LLDP_MARK) {
+      // LLDP collect → one frame per port (a free port advertises with no peer).
+      for (const dev of list) {
+        for (const p of dev.ports || []) {
+          sock.send(buildLldpFrame({ station: dev.name, portId: p.id, portDesc: p.desc, remoteStation: p.remote?.station, remotePort: p.remote?.port }), rinfo.port, rinfo.address);
+        }
+      }
+      return;
+    }
+    if (msg.length < 12) return;
     const xid = msg.readUInt32BE(4);
     if (frameId === 0xfefe) {
       // Identify-All → one datagram per device.

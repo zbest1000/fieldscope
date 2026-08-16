@@ -185,11 +185,163 @@ function networkOf(ipStr, maskStr) {
   return `${a.map((o, i) => o & m[i]).join('.')}/${maskToCidr(maskStr)}`;
 }
 
-// Derive a logical topology from DCP: devices grouped by IP subnet, with the
-// IO-Controller as the hub each IO-Device hangs off. Honest scope: port-level
-// neighbor links (which cable into which port) come from LLDP, not DCP — this is
-// the addressing-level view PRONETA draws before LLDP neighbor detection.
-function buildTopology(devices) {
+// ---- LLDP neighbour discovery (the port-level half of the topology) --------
+// PRONETA's headline view — a device's ports and which port cables to which
+// neighbour port — is reconstructed from LLDP (IEEE 802.1AB, EtherType 0x88cc),
+// not DCP. Each PROFINET port multicasts an LLDPDU announcing its own chassis
+// (station name) + port; a receiver learns its neighbour from the frame arriving
+// on a given local port. PRONETA either passively captures every LLDPDU on the
+// segment or reads each device's lldpRemoteSystemsData MIB, then joins them into
+// port-to-port links. Real LLDP is raw L2 (declared requires_l2); over the UDP
+// test harness the responder returns the already-resolved remote table, encoded
+// as LLDP TLV frames, so one collect call yields the same links PRONETA draws.
+const LLDP_MARK = 0x88cc; // harness marker for an LLDP-collect request
+const LLDP_TLV = { END: 0, CHASSIS_ID: 1, PORT_ID: 2, TTL: 3, PORT_DESC: 4, SYS_NAME: 5, ORG: 127 };
+const PNO_OUI = Buffer.from([0x00, 0x0e, 0xcf]); // PROFINET (PNO) organisationally-unique id
+const PNO_SUB_PEER = 0x51; // harness suboption: learned remote peer (station + port)
+
+function lldpTlv(type, value) {
+  const hdr = Buffer.alloc(2);
+  hdr.writeUInt16BE(((type & 0x7f) << 9) | (value.length & 0x1ff), 0);
+  return Buffer.concat([hdr, value]);
+}
+
+// Encode one device port's LLDP view (local chassis/port + learned neighbour).
+export function buildLldpFrame({ station, portId, portDesc, remoteStation, remotePort }) {
+  const tlvs = [
+    lldpTlv(LLDP_TLV.CHASSIS_ID, Buffer.concat([Buffer.from([0x07]), Buffer.from(station, 'latin1')])), // subtype 7 = locally assigned
+    lldpTlv(LLDP_TLV.PORT_ID, Buffer.concat([Buffer.from([0x07]), Buffer.from(portId, 'latin1')])),
+    lldpTlv(LLDP_TLV.TTL, Buffer.from([0x00, 0x78])), // 120 s
+    lldpTlv(LLDP_TLV.PORT_DESC, Buffer.from(portDesc, 'latin1')),
+    lldpTlv(LLDP_TLV.SYS_NAME, Buffer.from(station, 'latin1')),
+  ];
+  if (remoteStation) {
+    const peer = Buffer.concat([PNO_OUI, Buffer.from([PNO_SUB_PEER]), Buffer.from(`${remoteStation}\x00${remotePort || ''}`, 'latin1')]);
+    tlvs.push(lldpTlv(LLDP_TLV.ORG, peer));
+  }
+  tlvs.push(lldpTlv(LLDP_TLV.END, Buffer.alloc(0)));
+  return Buffer.concat([Buffer.from([(LLDP_MARK >> 8) & 0xff, LLDP_MARK & 0xff]), ...tlvs]);
+}
+
+// Decode an LLDP frame → a remote-table row.
+export function parseLldpFrame(buf) {
+  if (buf.length < 4 || buf.readUInt16BE(0) !== LLDP_MARK) return null;
+  const row = { station: null, port_id: null, port_desc: null, remote_station: null, remote_port: null };
+  let o = 2;
+  while (o + 2 <= buf.length) {
+    const h = buf.readUInt16BE(o);
+    const type = (h >> 9) & 0x7f;
+    const len = h & 0x1ff;
+    const val = buf.subarray(o + 2, o + 2 + len);
+    o += 2 + len;
+    if (type === LLDP_TLV.END) break;
+    if (type === LLDP_TLV.CHASSIS_ID) row.station = val.subarray(1).toString('latin1');
+    else if (type === LLDP_TLV.PORT_ID) row.port_id = val.subarray(1).toString('latin1');
+    else if (type === LLDP_TLV.PORT_DESC) row.port_desc = val.toString('latin1');
+    else if (type === LLDP_TLV.SYS_NAME && !row.station) row.station = val.toString('latin1');
+    else if (type === LLDP_TLV.ORG && val.length >= 4 && val.subarray(0, 3).equals(PNO_OUI) && val[3] === PNO_SUB_PEER) {
+      const [rs, rp] = val.subarray(4).toString('latin1').split('\x00');
+      row.remote_station = rs || null;
+      row.remote_port = rp || null;
+    }
+  }
+  return row;
+}
+
+// Collect the LLDP remote table from the segment (one datagram per port link).
+function collectLldp(ctx) {
+  const responder = ctx.params?.responder || '127.0.0.1';
+  const port = ctx.params?.responder_port ?? 34964;
+  const windowMs = Math.min(8000, Math.max(500, ctx.params?.window_ms ?? 2000));
+  const req = Buffer.from([(LLDP_MARK >> 8) & 0xff, LLDP_MARK & 0xff, 0x00, 0x00]); // collect request
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket('udp4');
+    const rows = [];
+    const seen = new Set();
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { sock.close(); } catch { /* already closed */ }
+      resolve({ rows, error: err || null });
+    };
+    sock.on('error', (e) => finish(e.code || e.message));
+    sock.on('message', (msg) => {
+      const key = msg.toString('hex');
+      if (seen.has(key)) return;
+      seen.add(key);
+      const r = parseLldpFrame(msg);
+      // Keep every advertised port (a free port has no remote) so the map can
+      // show available ports, not just cabled ones — PRONETA does the same.
+      if (r && r.station && (r.port_desc || r.port_id)) rows.push(r);
+    });
+    const timer = setTimeout(() => finish(null), windowMs);
+    sock.bind(0, () => sock.send(req, port, responder, (e) => { if (e) finish(e.code || e.message); }));
+  });
+}
+
+const kindOf = (role) => ((role || '').includes('Controller') ? 'controller' : (role || '').includes('Supervisor') ? 'supervisor' : 'device');
+
+// Physical topology from LLDP: device boxes carrying their ports, joined by
+// port-to-port cables (deduped so A→B and B→A collapse to one link). This is
+// the PRONETA view — you can read which local port connects to which neighbour
+// port. DCP identity (IP / vendor / role) is merged in per station.
+function buildPhysicalTopology(devices, rows) {
+  const byName = new Map();
+  const ensure = (station) => {
+    if (!byName.has(station)) {
+      const d = devices.find((x) => x.name_of_station === station);
+      byName.set(station, {
+        id: `dev:${station}`,
+        label: station,
+        kind: d ? kindOf(d.role) : 'switch', // an LLDP peer with no DCP identity is a switch/infrastructure port
+        ip: d && d.ip && d.ip !== '0.0.0.0' ? d.ip : null,
+        vendor: d ? (d.vendor || (d.vendor_id != null ? `vendor ${d.vendor_id}` : null)) : null,
+        role: d ? d.role : null,
+        ports: [],
+      });
+    }
+    return byName.get(station);
+  };
+  // Every DCP device shows up even if it has no LLDP neighbour yet.
+  for (const d of devices) ensure(d.name_of_station || '(no name)');
+
+  const addPort = (node, portName) => {
+    if (!portName) return;
+    if (!node.ports.some((p) => p.name === portName)) node.ports.push({ name: portName, linked: false });
+  };
+  const links = [];
+  const linkSeen = new Set();
+  for (const r of rows) {
+    const localPort = r.port_desc || r.port_id;
+    const a = ensure(r.station);
+    addPort(a, localPort);
+    if (!r.remote_station) continue; // a free port: shown as available, no cable
+    const b = ensure(r.remote_station);
+    addPort(b, r.remote_port);
+    const aP = a.ports.find((p) => p.name === localPort);
+    const bP = b.ports.find((p) => p.name === r.remote_port);
+    if (aP) aP.linked = true;
+    if (bP) bP.linked = true;
+    const key = [`${r.station}|${localPort}`, `${r.remote_station}|${r.remote_port}`].sort().join('::');
+    if (linkSeen.has(key)) continue;
+    linkSeen.add(key);
+    links.push({ a: { station: r.station, port: localPort }, b: { station: r.remote_station, port: r.remote_port } });
+  }
+  // Stable port order per device (X1 P1, X1 P2, …).
+  for (const n of byName.values()) n.ports.sort((p, q) => p.name.localeCompare(q.name, undefined, { numeric: true }));
+  return {
+    kind: 'physical',
+    nodes: [...byName.values()],
+    links,
+    note: 'Physical topology from LLDP (IEEE 802.1AB) — device ports and the port-to-port cabling PRONETA reconstructs. Device identity/IP is joined in from DCP. Real LLDP is raw Ethernet 0x88cc (declared requires_l2); collected here over the UDP test harness.',
+  };
+}
+
+// Fallback when no LLDP is present: the logical DCP view — devices grouped by IP
+// subnet, IO-Controller as the hub each IO-Device hangs off.
+function buildLogicalTopology(devices) {
   const withId = devices.map((d, i) => ({ ...d, _id: `dev${i}` }));
   const bySubnet = new Map();
   for (const d of withId) {
@@ -205,11 +357,10 @@ function buildTopology(devices) {
     nodes.push({ id: segId, label: key === 'unconfigured' ? 'no IP / unconfigured' : key, kind: 'segment' });
     const hub = devs.find((d) => (d.role || '').includes('Controller'));
     for (const d of devs) {
-      const roleStr = d.role || '';
       nodes.push({
         id: d._id,
         label: d.name_of_station || '(no name)',
-        kind: roleStr.includes('Controller') ? 'controller' : roleStr.includes('Supervisor') ? 'supervisor' : 'device',
+        kind: kindOf(d.role),
         ip: d.ip && d.ip !== '0.0.0.0' ? d.ip : null,
         vendor: d.vendor || (d.vendor_id != null ? `vendor ${d.vendor_id}` : null),
         role: d.role,
@@ -219,9 +370,10 @@ function buildTopology(devices) {
     }
   }
   return {
+    kind: 'logical',
     nodes,
     edges,
-    note: 'Logical topology from DCP (station name / role / subnet). Port-level neighbor wiring requires LLDP (declared requires_l2).',
+    note: 'Logical topology from DCP (station name / role / subnet) — no LLDP neighbours were seen, so port-level cabling is unknown. On a live segment PRONETA draws the physical port graph from LLDP.',
   };
 }
 
@@ -348,17 +500,21 @@ export const verbs = {
     };
   },
 
-  // Browse the segment as a topology map (nodes + edges) the UI draws as a graph.
+  // Browse the segment as a topology map. Joins DCP identity (who is here, what
+  // IP/role) with the LLDP remote table (which port cables to which neighbour
+  // port) into the PRONETA-style physical graph; falls back to the logical DCP
+  // view when no LLDP neighbours are seen.
   async browse(ctx) {
-    const res = await identifyAll(ctx);
-    const topology = buildTopology(res.devices);
+    const [res, lldp] = await Promise.all([identifyAll(ctx), collectLldp(ctx)]);
+    const topology = lldp.rows.length > 0 ? buildPhysicalTopology(res.devices, lldp.rows) : buildLogicalTopology(res.devices);
     const a = analyze(res.devices);
+    const linkCount = topology.links ? topology.links.length : 0;
     return {
       artifact: makeArtifact({
         verb: 'browse',
-        raw: `Identify-All xid=0x${res.xid.toString(16)} → ${res.devices.length} device(s)${res.error ? ` · ${res.error}` : ''}`,
-        decode: res.devices,
-        result: { topology, ...a, note: res.devices.length === 0 ? (res.error ? `error: ${res.error}` : 'no DCP response — a real segment needs a raw/mirror Ethernet adapter (L2)') : undefined },
+        raw: `Identify-All → ${res.devices.length} device(s); LLDP → ${lldp.rows.length} port link(s)${res.error ? ` · ${res.error}` : ''}`,
+        decode: { devices: res.devices, lldp: lldp.rows },
+        result: { topology, links: linkCount, ...a, note: res.devices.length === 0 ? (res.error ? `error: ${res.error}` : 'no DCP response — a real segment needs a raw/mirror Ethernet adapter (L2)') : undefined },
       }),
       facts: {},
     };
