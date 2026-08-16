@@ -1,0 +1,156 @@
+# Driver reference
+
+Every protocol in Fieldscope is a **driver**: a capability manifest plus an
+implementation of whichever contract verbs apply. The rest of the workbench —
+UI, evidence store, rules engine, the ARM double-gate — is written once against
+that contract (`server/src/contract/contract.js`), so a driver never touches
+those layers. Adding a protocol is one file in `server/src/drivers/`.
+
+## The contract verbs
+
+The UI renders a tab per declared verb (in this order), plus a **Raw** tab that
+hex-dumps the last artifact:
+
+| Verb | What it means |
+|---|---|
+| `connect` | prove the endpoint is live (open the session / handshake) |
+| `identify` | who/what is there — identity, capabilities, first status |
+| `browse` | enumerate what the endpoint exposes (points, topics, ports, topology) |
+| `read` | pull specific values |
+| `write` | change a value — **always** behind ARM + per-write confirm + read-back + audit (§4.1) |
+| `monitor` | sample over time → RTT / jitter / loss sparkline |
+| `diagnose` | correlate results + transport facts through a YAML rulepack → a plain-English **verdict** |
+
+Every verb returns a stored, replayable **artifact** (raw bytes + decode +
+verdict). Diagnose renders "what is wrong and why", not a raw dump. Writes are
+marked ⚡ below and clear the double-gate.
+
+Each driver also ships a live **simulator** (`server/test/*-sim.js`, including
+fault variants), so everything runs and is tested with no hardware. The same
+simulators power the `docker compose --profile lab` plant floor.
+
+---
+
+## Discovery — "what is on this network"
+
+### ICMP (ping) · `icmp.js`
+Reachability and latency. `identify` pings the host; `monitor` streams RTT,
+jitter, and packet loss as a rolling sparkline. Baselines a link and exposes
+intermittent loss. Raw ICMP needs `NET_RAW`.
+
+### IP Scanner · `ipscan.js`
+TCP host/port discovery. `read` sweeps a CIDR (TCP-ping) for live hosts;
+`browse` scans a port range; `identify` scans a curated common-port list
+(heavy on OT ports) and names services with a light banner grab; `connect`
+checks one port's state. Concurrency-pooled and bounded so it's safe on a live
+segment. **Diagnose** flags reachable industrial-control services / remote-access
+surface.
+
+### DHCP / BOOTP ⚡ · `dhcp.js` · udp 67
+Address service inspection and assignment. `identify` sends a DISCOVER and
+decodes every OFFER's options (subnet / router / DNS / lease). **Diagnose**
+flags a **rogue / multi-server** segment (two servers answering one DISCOVER).
+`write` assigns an address to a MAC in either **DHCP** (DORA: DISCOVER → REQUEST
+→ ACK) or classic **BOOTP** (single request/reply, no lease) mode.
+
+### DNS (A / PTR) · `dns.js` · 53
+Forward and reverse resolution with record decode; surfaces resolution
+failures and forward/reverse mismatches.
+
+---
+
+## Tools — IT-tier fundamentals
+
+### TCP/UDP Probe · `tcpudp.js`
+Raw port-state check (open / closed / filtered) with a banner grab — the
+generic connectivity primitive under everything else.
+
+### TLS / Cert Inspector · `tls.js` · 443
+TLS handshake and certificate-chain decode (subject / issuer / validity / SAN).
+**Diagnose** flags expiry and hostname mismatches.
+
+### SNMP v1/v2c · `snmp.js` · udp 161
+GET / WALK over the interface table (`ifTable`). Reads **per-port error
+counters** so a **flaky cable** shows up as errors climbing on one port while
+its neighbours stay clean — the flagship "which cable is bad" verdict.
+
+---
+
+## Industrial — plant-floor control
+
+### Modbus TCP ⚡ · `modbus.js` · 502
+MBAP-framed register/coil access. `read` pulls holding / input registers and
+coils / discrete inputs, and can **interpret register pairs** as int16 / uint32
+/ int32 / float32 with big or little **word order** (the constant "is this a
+float, which order?" question). `write` sets a single coil (FC05) / register
+(FC06), or a **32-bit setpoint** across two registers via FC16 — all behind the
+double-gate with read-back. **Diagnose** decodes exception codes; the flagship
+is a gateway whose downstream RTU is dead (exception 0x0B) vs a healthy slave.
+
+### EtherNet/IP + CIP · `ethernet-ip.js` · 44818
+CIP Identity object via List Identity. Decodes the **status word + device
+state**. Flagship verdict: a drive reporting a Major Unrecoverable Fault.
+
+### S7comm · `s7comm.js` · 102
+ISO-on-TCP (TPKT / COTP) connect at a specific **rack/slot**, then an SZL read
+for order number + firmware. Flagship: the wrong rack/slot is silently refused
+(looks like an offline PLC).
+
+### PROFINET DCP / LLDP ⚡ · `profinet-dcp.js` · raw L2
+Two protocols joined. **DCP** `identify` runs Identify-All discovery (station
+name / IP / vendor / role); `browse` reconstructs the **physical port topology**
+from **LLDP** (each device's ports and which port cables to which neighbour
+port), falling back to a logical subnet view when no LLDP is seen; `write` is a
+**DCP Set** that commissions station name / IP / subnet / gateway (ARM-gated,
+Identify read-back). Flagship verdicts: duplicate station name, unconfigured IP
+(0.0.0.0). Real DCP/LLDP are raw Ethernet (`requires_l2`); the codecs run over a
+UDP test harness here.
+
+---
+
+## Utility — SCADA / telecontrol
+
+### BACnet/IP · `bacnet.js` · udp 47808
+Who-Is / I-Am discovery + device-object read for **system status**. `read`
+pulls object properties. Flagship: a controller reporting non-operational.
+
+### DNP3 · `dnp3.js` · 20000
+Link-status addressing check + Class 0 integrity read, decoded to the **IIN**
+(Internal Indications) word. Flagship bits: device-restart, need-time,
+event-buffer overflow, configuration-corrupt. Wire-correct CRC (checked against
+the opendnp3 reference).
+
+### IEC 60870-5-104 ⚡ · `iec104.js` · 2404
+APCI (U / S / I frames) + ASDU decode. `connect` runs the STARTDT handshake;
+`read` / `browse` issue a **General Interrogation** and list the returned points
+(including **CP56Time2a** timestamps on time-tagged events); `write` operates a
+point with a **single command (C_SC_NA_1)** using the real **select-before-
+operate** handshake through the double-gate. **Diagnose** verdicts: link not
+activated (no STARTDT con), **unknown common address (COT 46)** — the top "link
+up, no data" misconfig — and GI rejected.
+
+---
+
+## IIoT — message-bus / OT-IT bridge
+
+### MQTT 3.1.1 ⚡ · `mqtt.js` · 1883
+CONNECT / CONNACK, `browse` the subscribed topic tree, `write` publishes as an
+ARM-gated write. Flagship: auth-required / not-authorized CONNACK verdicts.
+
+### Sparkplug B · `sparkplug.js` · 1883
+Decodes the NBIRTH / NDATA / NDEATH lifecycle with a dependency-free protobuf
+codec; `browse` shows the node tree with lifecycle state. Detects **sequence
+gaps and node death** per edge node.
+
+### OPC UA · `opcua.js` · 4840
+UACP Hello / Acknowledge handshake and negotiated transport limits; decodes
+protocol-error StatusCodes. Flagship: endpoint-URL-invalid.
+
+---
+
+## Adding a driver
+
+Drop `server/src/drivers/<id>.js` exporting `manifest` + `verbs`, register it in
+`server/src/drivers/index.js`, add `server/rulepacks/<id>.yaml` for diagnose
+verdicts, and a `server/test/<id>-sim.js` simulator with tests. Nothing in the
+UI, evidence, or rules layers changes — that plugin boundary is the point (§3).

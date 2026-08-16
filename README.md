@@ -37,6 +37,9 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
 
+**Per-driver capability reference:** [`docs/DRIVERS.md`](docs/DRIVERS.md) — what each
+driver does, its verbs, key exchange, and flagship verdict.
+
 ## Quick start (Docker)
 
 ```bash
