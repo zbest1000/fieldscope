@@ -1,0 +1,62 @@
+# HTTP / REST rulepack (§5). Keyed off one request: did the endpoint answer, and
+# what status class did it return.
+
+rulepack: http
+rules:
+  - id: unreachable
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "HTTP endpoint unreachable"
+      detail: >
+        The connection failed before any HTTP response. The service is down, the
+        port/scheme is wrong (http vs https), or a firewall blocks it.
+      next_steps:
+        - "Confirm the port and scheme (80/http vs 443/https, or a custom port)"
+        - "Check the device's web service is enabled"
+
+  - id: server-error
+    when:
+      transport.tcp_connect: success
+      http.class: 5xx
+    verdict:
+      severity: error
+      title: "Endpoint returned a 5xx server error"
+      detail: >
+        The web service answered but failed to handle the request (5xx). The
+        device is reachable but its application or backend is faulting.
+      next_steps:
+        - "Check the device's application logs / restart the web service"
+
+  - id: client-error
+    when:
+      transport.tcp_connect: success
+      http.class: 4xx
+    verdict:
+      severity: warn
+      title: "Endpoint returned a 4xx client error"
+      detail: >
+        The service answered with a 4xx — commonly 401/403 (authentication
+        required) or 404 (wrong path). The endpoint is alive; the request was
+        rejected.
+      next_steps:
+        - "Check the request path and whether the endpoint needs authentication"
+
+  - id: redirect
+    when:
+      transport.tcp_connect: success
+      http.class: 3xx
+    verdict:
+      severity: info
+      title: "Endpoint redirects (3xx)"
+      detail: "The endpoint answered with a redirect — often http → https. Follow the Location header."
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      http.ok: true
+    verdict:
+      severity: ok
+      title: "HTTP endpoint healthy (2xx)"
+      detail: "The endpoint answered with a success status. Read to decode the response body."

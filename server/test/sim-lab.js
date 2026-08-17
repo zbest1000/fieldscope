@@ -38,6 +38,9 @@ import { startOpcuaSim } from './opcua-sim.js';
 import { startDhcpSim } from './dhcp-sim.js';
 import { startProfinetDcpSim } from './profinet-dcp-sim.js';
 import { startDnsSim } from './dns-sim.js';
+import { startNtpSim } from './ntp-sim.js';
+import { startHttpSim } from './http-sim.js';
+import { startCoapSim } from './coap-sim.js';
 
 const services = [];
 
@@ -88,6 +91,9 @@ await up('sparkplug edge node', '→ mqtt :1883 (Plant1/Line3, periodic rebirth)
 });
 await up('opcua server', ':4840   (Hello/Ack + OpenSecureChannel/GetEndpoints)', () => startOpcuaSim({ port: 4840 }));
 await up('dns server', ':5354/udp (zone plant.local: plc/gw + A/MX/TXT/NS)', () => startDnsSim({ port: 5354 }));
+await up('ntp server', ':1123/udp (stratum 2, synchronized)', () => startNtpSim({ port: 1123, stratum: 2 }));
+await up('http server', ':8080   (JSON /health; /secure 401, /boom 500)', () => startHttpSim({ port: 8080 }));
+await up('coap server', ':5683/udp (/.well-known/core: temp/humidity/led)', () => startCoapSim({ port: 5683 }));
 await up('dhcp server', ':6767/udp (offers 10.10.0.50, single server)', () => startDhcpSim({ port: 6767 }));
 await up('profinet-dcp responder', ':34964/udp (plc-line3 + io-station-1)', () => startProfinetDcpSim({ port: 34964 }));
 

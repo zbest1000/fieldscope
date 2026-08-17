@@ -8,6 +8,8 @@ import * as icmp from './icmp.js';
 import * as tcpudp from './tcpudp.js';
 import * as dns from './dns.js';
 import * as tls from './tls.js';
+import * as ntp from './ntp.js';
+import * as httpDriver from './http.js';
 import * as modbus from './modbus.js';
 import * as ethernetIp from './ethernet-ip.js';
 import * as mqtt from './mqtt.js';
@@ -18,11 +20,12 @@ import * as iec104 from './iec104.js';
 import * as s7comm from './s7comm.js';
 import * as sparkplug from './sparkplug.js';
 import * as opcua from './opcua.js';
+import * as coap from './coap.js';
 import * as ipscan from './ipscan.js';
 import * as dhcp from './dhcp.js';
 import * as profinetDcp from './profinet-dcp.js';
 
-const MODULES = [icmp, ipscan, tcpudp, dhcp, dns, tls, snmpDriver, modbus, ethernetIp, s7comm, profinetDcp, bacnet, dnp3, iec104, mqtt, sparkplug, opcua];
+const MODULES = [icmp, ipscan, tcpudp, dhcp, dns, ntp, tls, httpDriver, snmpDriver, modbus, ethernetIp, s7comm, profinetDcp, bacnet, dnp3, iec104, mqtt, sparkplug, opcua, coap];
 
 export class DriverRegistry {
   constructor() {

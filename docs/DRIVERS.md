@@ -71,6 +71,28 @@ generic connectivity primitive under everything else.
 TLS handshake and certificate-chain decode (subject / issuer / validity / SAN).
 **Diagnose** flags expiry and hostname mismatches.
 
+### NTP / SNTP · `ntp.js` · udp 123
+A single SNTP exchange (RFC 4330) that answers "is this time server actually
+serving good time?" `identify` decodes the server's **stratum**, **leap
+indicator**, root delay/dispersion, and **reference source** (GPS/PPS for
+stratum ≤ 1, upstream IP otherwise), and computes the **local clock offset** and
+round-trip delay from the four NTP timestamps. `monitor` streams the offset so a
+drifting or hunting clock walks off zero. **Diagnose** flags an **unsynchronized**
+server (stratum 0/16 or the alarm leap bit) and a **>1s local offset** — the
+signal that event timestamps captured here won't line up with device/SCADA time.
+Clock sync underpins every time-tagged point (CP56Time2a, Sparkplug) and the
+evidence store's `clock_anchor`.
+
+### HTTP / REST · `http.js` · 80/443
+Probes an HTTP/REST endpoint — the JSON status/health surface that edge
+gateways, inverters, and building controllers expose. `identify` reports the
+**status class**, server, content type, and latency; `read` decodes a **JSON
+body into a dotted point tree** (or a bounded text preview); `monitor` streams
+latency. **Diagnose** turns the status class into a verdict: 5xx (server
+faulting), 4xx (auth/wrong-path), 3xx (redirect, often http→https), 2xx healthy.
+TLS certs are **not** validated here (use the TLS driver for the cert audit) so a
+box with a self-signed cert still reports its real status.
+
 ### SNMP v1/v2c · `snmp.js` · udp 161
 GET / WALK over the interface table (`ifTable`). Reads **per-port error
 counters** so a **flaky cable** shows up as errors climbing on one port while
@@ -90,7 +112,10 @@ quirk covered: `ABCD` (big-endian), `CDAB` (word-swapped), `BADC` (byte-swapped)
 and in which order does *this* device store it?") — flip the order until the
 value reads sane. Legacy `big`/`little` map to `ABCD`/`CDAB`. 64-bit integers
 beyond JavaScript's safe range are returned as exact decimal strings (no
-precision loss). `write` sets a single coil (FC05) / register (FC06), or a wide
+precision loss). A register run can also be read as an **ASCII/UTF-8 string**
+(device name / serial), and any numeric read can carry a **linear scale** (`raw
+× gain + offset`) so a raw `0–27648` shows as `0–100 %` in real engineering
+units. `write` sets a single coil (FC05) / register (FC06), or a wide
 **setpoint** across two or four registers via FC16 in the chosen byte order — all
 behind the double-gate with read-back. **Diagnose** decodes exception codes; the
 flagship is a gateway whose downstream RTU is dead (exception 0x0B) vs a healthy
@@ -160,6 +185,17 @@ Decodes the NBIRTH / NDATA / NDEATH lifecycle with a dependency-free protobuf
 codec; `browse` shows the node tree with lifecycle state; `read` resolves metric
 **aliases → names** from the births and shows the latest metric values per node.
 Detects **sequence gaps and node death** per edge node.
+
+### CoAP · `coap.js` · udp 5683
+The constrained-device REST analog of HTTP (RFC 7252) — a compact binary
+request/response over UDP that battery/bandwidth-limited IoT sensors and LwM2M
+endpoints speak. `identify` and `browse` GET **`/.well-known/core`** and decode
+the **CoRE Link Format** (RFC 6690) into a resource tree, each entry with its
+resource type (`rt`) and interface (`if`); `read` GETs an arbitrary Uri-Path and
+returns the payload. **Diagnose** decodes the response class into a verdict:
+2.xx healthy, 4.xx (4.04 wrong path / 4.01 unauthorized), 5.xx server fault, or
+unreachable. Raw binary CoAP codec (header + delta-encoded options + payload),
+dependency-free.
 
 ### OPC UA · `opcua.js` · 4840
 UACP Hello / Acknowledge handshake and negotiated transport limits (`connect` /

@@ -20,6 +20,9 @@ import { startBacnetSim } from './bacnet-sim.js';
 import { startDnp3Sim } from './dnp3-sim.js';
 import { startIec104Sim } from './iec104-sim.js';
 import { startDnsSim } from './dns-sim.js';
+import { startNtpSim } from './ntp-sim.js';
+import { startHttpSim } from './http-sim.js';
+import { startCoapSim } from './coap-sim.js';
 import { startS7Sim } from './s7-sim.js';
 import { startSparkplugNode } from './sparkplug-node.js';
 import { startOpcuaSim } from './opcua-sim.js';
@@ -178,6 +181,29 @@ async function main() {
     assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'big'), interpretRegisters([0x1234, 0x5678], 'uint32', 'ABCD'));
     assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'little'), interpretRegisters([0x1234, 0x5678], 'uint32', 'CDAB'));
   });
+  await test('string decode + linear scaling (engineering units)', async () => {
+    const { interpretRegisters, scaleValues } = await import('../src/drivers/modbus.js');
+    // "FS-100" packed big-endian across three registers.
+    assert.deepStrictEqual(interpretRegisters([0x4653, 0x2d31, 0x3030], 'string', 'ABCD'), ['FS-100']);
+    // Byte-swapped device (BADC swaps the two bytes inside each register).
+    assert.deepStrictEqual(interpretRegisters([0x5346, 0x312d, 0x3030], 'string', 'BADC'), ['FS-100']);
+    // Trailing NUL padding is trimmed.
+    assert.deepStrictEqual(interpretRegisters([0x4142, 0x4300], 'string', 'ABCD'), ['ABC']);
+    // Linear scale: 0–27648 → 0–100 %.
+    assert.deepStrictEqual(scaleValues([0, 13824, 27648], 100 / 27648, 0), [0, 50, 100]);
+    // Offset applies; strings pass through untouched.
+    assert.deepStrictEqual(scaleValues([100, 200], 0.1, -5), [5, 15]);
+    assert.deepStrictEqual(scaleValues(['FS-100'], 2, 1), ['FS-100']);
+  });
+  await test('read applies gain/offset scaling end-to-end', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    // Sim holding[0]=1000; scale ×0.1 −50 → 50.
+    const art = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 1, format: 'uint16', gain: 0.1, offset: -50 });
+    assert.deepStrictEqual(art.result.scaling, { gain: 0.1, offset: -50 });
+    assert.strictEqual(art.result.values[0], 50);
+    assert.strictEqual(art.result.tree[0].points[0].value, 50);
+  });
   await test('64-bit interpretation + encode round-trip across all byte orders', async () => {
     const { interpretRegisters, encodeRegisters, registerStride } = await import('../src/drivers/modbus.js');
     assert.strictEqual(registerStride('float64'), 4);
@@ -318,6 +344,103 @@ async function main() {
     assert.strictEqual(none.result.records, 0);
     dnsSim.close();
   });
+
+  // ---- NTP / SNTP driver against the simulator ----
+  console.log('ntp / sntp driver (against simulator)');
+  await test('identify decodes stratum / reference / offset from an SNTP reply', async () => {
+    const sim = await startNtpSim({ stratum: 1, refId: 'GPS' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { timeout: 1500 });
+    assert.strictEqual(art.result.stratum, 1);
+    assert.strictEqual(art.result.reference_id, 'GPS');
+    assert.strictEqual(typeof art.result.offset_ms, 'number');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex');
+    sim.close();
+  });
+  await test('a synchronized server diagnoses healthy', async () => {
+    const sim = await startNtpSim({ stratum: 2 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    sim.close();
+  });
+  await test('stratum 16 produces the unsynchronized verdict', async () => {
+    const sim = await startNtpSim({ stratum: 16 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unsynchronized');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    sim.close();
+  });
+  await test('a skewed clock produces the large-offset verdict', async () => {
+    const sim = await startNtpSim({ stratum: 2, skewMs: 5000 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'large-offset');
+    assert.strictEqual(art.verdicts[0].severity, 'warn');
+    sim.close();
+  });
+  await test('an unreachable time server diagnoses unreachable', async () => {
+    const { orchestrator } = makeStack();
+    // Bind then close a UDP socket to get a dead port.
+    const tmp = (await import('node:dgram')).createSocket('udp4');
+    const deadPort = await new Promise((r) => tmp.bind(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: deadPort });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unreachable');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+  });
+
+  // ---- HTTP / REST device probe ----
+  console.log('http / rest driver (against simulator)');
+  {
+    const httpSim = await startHttpSim({ firmware: '1.4.2' });
+    await test('identify reports status, server and content type', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'identify', { path: '/', timeout: 2000 });
+      assert.strictEqual(art.result.status, 200);
+      assert.strictEqual(art.result.status_class, '2xx');
+      assert.match(art.result.content_type, /application\/json/);
+    });
+    await test('read decodes a JSON body into a dotted point tree', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'read', { path: '/', timeout: 2000 });
+      const refs = art.result.tree[0].points.map((p) => p.ref);
+      assert.ok(refs.includes('firmware') && refs.includes('tags.temperature_c'));
+      const temp = art.result.tree[0].points.find((p) => p.ref === 'tags.temperature_c');
+      assert.strictEqual(temp.value, 42.5);
+    });
+    await test('a 2xx endpoint diagnoses healthy', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.diagnose(ses.id, { path: '/health', timeout: 2000 });
+      assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    });
+    await test('a 500 produces the server-error verdict; 401 the client-error verdict', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const boom = await orchestrator.diagnose(ses.id, { path: '/boom', timeout: 2000 });
+      assert.strictEqual(boom.verdicts[0].rule_id, 'server-error');
+      assert.strictEqual(boom.verdicts[0].severity, 'error');
+      const secure = await orchestrator.diagnose(ses.id, { path: '/secure', timeout: 2000 });
+      assert.strictEqual(secure.verdicts[0].rule_id, 'client-error');
+    });
+    httpSim.close();
+    await test('an unreachable endpoint diagnoses unreachable', async () => {
+      const { orchestrator } = makeStack();
+      const tmp = net.createServer();
+      const deadPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: deadPort });
+      const art = await orchestrator.diagnose(ses.id, { path: '/', timeout: 1500 });
+      assert.strictEqual(art.verdicts[0].rule_id, 'unreachable');
+    });
+  }
 
   // ---- EtherNet/IP driver against the simulator ----
   console.log('ethernet-ip driver (against simulator)');
@@ -906,6 +1029,50 @@ async function main() {
     assert.strictEqual(handshake[0].rule_id, 'healthy');
   });
   uaSim.server.close();
+
+  // ---- CoAP driver against the simulator ----
+  console.log('coap driver (against simulator)');
+  {
+    const coapSim = await startCoapSim({});
+    await test('identify GETs /.well-known/core and counts resources', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'identify', { timeout: 1500 });
+      assert.strictEqual(art.result.code, '2.05');
+      assert.strictEqual(art.result.resources, 3);
+      assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex');
+    });
+    await test('browse enumerates the CoRE Link Format resource tree', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'browse', { timeout: 1500 });
+      const refs = art.result.tree[0].points.map((p) => p.ref);
+      assert.deepStrictEqual(refs, ['/sensors/temp', '/sensors/humidity', '/actuators/led']);
+      const temp = art.result.tree[0].points.find((p) => p.ref === '/sensors/temp');
+      assert.strictEqual(temp.type, 'temperature');
+    });
+    await test('read returns a resource payload; a missing path is 4.04', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const ok = await orchestrator.runVerb(ses.id, 'read', { path: '/sensors/temp', timeout: 1500 });
+      assert.strictEqual(ok.result.code, '2.05');
+      assert.strictEqual(ok.result.payload, '22.4');
+      const miss = await orchestrator.runVerb(ses.id, 'read', { path: '/nope', timeout: 1500 });
+      assert.strictEqual(miss.result.code, '4.04');
+    });
+    await test('a 2.05 response diagnoses healthy; a dead port is unreachable', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const good = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+      assert.strictEqual(good.verdicts[0].rule_id, 'healthy');
+      const tmp = (await import('node:dgram')).createSocket('udp4');
+      const deadPort = await new Promise((r) => tmp.bind(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+      const dead = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: deadPort });
+      const bad = await orchestrator.diagnose(dead.id, { timeout: 600 });
+      assert.strictEqual(bad.verdicts[0].rule_id, 'unreachable');
+    });
+    coapSim.close();
+  }
 
   // ---- IP Scanner (TCP host/port discovery) ----
   console.log('ip scanner (discovery)');

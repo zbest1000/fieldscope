@@ -33,7 +33,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **UI shell** (global chrome, ARM hazard re-color, capability-driven tabs, evidence drawer) | ✅ `client/` |
 | **Docker packaging** (multi-stage image, compose stack with simulated plant floor, CI) | ✅ `Dockerfile` |
 | **Discovery** | **IP Scanner** (TCP host sweep, port scan, service ID) · **DHCP/BOOTP** (DISCOVER + option decode, rogue-server detection, address assignment in both **DHCP** DORA and classic **BOOTP** modes) · **PROFINET DCP + LLDP** (DCP Identify-All discovery, a **physical port topology** from LLDP — each device's ports and the port-to-port cabling — and **DCP Set** to commission station name / IP / subnet / gateway, ARM-gated) |
-| **Drivers** | ICMP · TCP/UDP probe · DNS · TLS/cert · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write with int16/uint32/int32/float32/uint64/int64/float64 interpretation and every byte/word-order quirk — ABCD/CDAB/BADC/DCBA; 32- & 64-bit setpoints via FC16) · **EtherNet/IP + CIP** (identity/status-word verdicts; CIP Get_Attribute_Single reads) · **S7comm** (rack/slot COTP + SZL identity; ReadVar DB/memory read) · **BACnet/IP** (Who-Is/I-Am + system-status; object-list browse) · **DNP3** (link-status + IIN-flag verdicts; Class 0 binary/analog point decode) · **IEC 60870-5-104** (STARTDT handshake + General Interrogation with COT verdicts; select-before-operate control command) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection; live metric-value read with alias resolution) · **OPC UA** (UACP handshake + error decode; OpenSecureChannel + GetEndpoints endpoint/security-policy enumeration) |
+| **Drivers** | ICMP · TCP/UDP probe · DNS · **NTP/SNTP** (stratum / leap / offset — unsynchronized & clock-skew verdicts) · TLS/cert · **HTTP/REST** (status-class verdict + JSON-body point tree) · **CoAP** (`/.well-known/core` resource enumeration) · **SNMP** (flaky-cable counters) · **Modbus TCP** (read + gated write with int16/uint32/int32/float32/uint64/int64/float64 + ASCII-string interpretation, every byte/word-order quirk — ABCD/CDAB/BADC/DCBA — and linear scaling to engineering units; 32- & 64-bit setpoints via FC16) · **EtherNet/IP + CIP** (identity/status-word verdicts; CIP Get_Attribute_Single reads) · **S7comm** (rack/slot COTP + SZL identity; ReadVar DB/memory read) · **BACnet/IP** (Who-Is/I-Am + system-status; object-list browse) · **DNP3** (link-status + IIN-flag verdicts; Class 0 binary/analog point decode) · **IEC 60870-5-104** (STARTDT handshake + General Interrogation with COT verdicts; select-before-operate control command) · **MQTT** (topic tree + gated publish) · **Sparkplug B** (birth/death + seq-gap detection; live metric-value read with alias resolution) · **OPC UA** (UACP handshake + error decode; OpenSecureChannel + GetEndpoints endpoint/security-policy enumeration) |
 
 Adding a protocol means dropping one driver file into `server/src/drivers/` — nothing
 in the UI, evidence, or rules layers changes. That plugin boundary is the point.
@@ -75,6 +75,9 @@ The `simlab` container serves, at hostname `simlab` from inside the stack:
 | PROFINET DCP | 34964/udp | DCP responder with `plc-line3` + `io-station-1` (point the `profinet-dcp` driver: `responder_port=34964`) |
 | Sparkplug B | (via mqtt 1883) | edge node `Plant1/Line3` birthing + streaming with periodic rebirth |
 | OPC UA | 4840 | server completing the UACP Hello/Ack handshake and answering OpenSecureChannel + GetEndpoints (None + Basic256Sha256 endpoints) |
+| NTP/SNTP | 1123/udp | stratum-2 synchronized time server (point the `ntp` driver at `127.0.0.1:1123`) |
+| HTTP | 8080 | JSON health endpoint; `/secure` → 401, `/boom` → 500, `/elsewhere` → 302 (exercise the status-class verdicts) |
+| CoAP | 5683/udp | node serving `/.well-known/core` (temp / humidity / led) + `/sensors/temp` |
 
 Evidence persists in the `fieldscope-data` volume across restarts. The image
 runs unprivileged; TCP/UDP drivers are fully functional in-container, while raw
@@ -119,7 +122,7 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 113 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 129 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 

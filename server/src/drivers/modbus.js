@@ -42,8 +42,12 @@ export const manifest = {
       // registers, 64-bit types four; byte_order handles every Modbus quirk of
       // word- and byte-swapping: ABCD (big), CDAB (word-swap), BADC (byte-swap),
       // DCBA (little). Legacy big/little map to ABCD/CDAB.
-      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32', 'uint64', 'int64', 'float64'], default: 'uint16' },
+      format: { type: 'enum', options: ['uint16', 'int16', 'uint32', 'int32', 'float32', 'uint64', 'int64', 'float64', 'string'], default: 'uint16' },
       byte_order: { type: 'enum', options: ['ABCD', 'CDAB', 'BADC', 'DCBA'], default: 'ABCD' },
+      // Linear scaling to engineering units: displayed = raw × gain + offset
+      // (numeric formats only). e.g. gain 0.003617 turns 0–27648 into 0–100 %.
+      gain: { type: 'number', default: 1 },
+      offset: { type: 'number', default: 0 },
     },
     write: {
       area: { type: 'enum', options: ['holding', 'coil'], default: 'holding' },
@@ -177,6 +181,14 @@ export const BYTE_ORDERS = ['ABCD', 'CDAB', 'BADC', 'DCBA'];
 const WIDTH = { uint16: 1, int16: 1, uint32: 2, int32: 2, float32: 2, uint64: 4, int64: 4, float64: 4 };
 export function registerStride(format) { return WIDTH[format] || 1; }
 
+// Apply a linear scale (raw × gain + offset) to numeric values — the raw→
+// engineering-units conversion field devices need (e.g. 0–27648 → 0–100 %).
+// No-op for gain=1/offset=0 or non-numeric values (strings pass through).
+export function scaleValues(values, gain = 1, offset = 0) {
+  if ((gain === 1 && offset === 0) || !Array.isArray(values)) return values;
+  return values.map((v) => (typeof v === 'number' ? round(v * gain + offset) : v));
+}
+
 // Legacy word_order 'big'/'little' → canonical byte-order names.
 function canonOrder(order) {
   if (order === 'big') return 'ABCD';
@@ -235,6 +247,14 @@ export function interpretRegisters(regs, format = 'uint16', order = 'ABCD') {
   order = canonOrder(order);
   if (format === 'uint16') return regs.slice();
   if (format === 'int16') return regs.map((r) => (r & 0x8000 ? r - 0x10000 : r));
+  // A register run holding text (device name / serial). Bytes are big-endian
+  // within each register; BADC/DCBA byte-swap within the word (a real quirk).
+  if (format === 'string') {
+    const buf = Buffer.alloc(regs.length * 2);
+    regs.forEach((r, i) => buf.writeUInt16BE(r & 0xffff, i * 2));
+    if (order === 'BADC' || order === 'DCBA') for (let i = 0; i + 1 < buf.length; i += 2) { const t = buf[i]; buf[i] = buf[i + 1]; buf[i + 1] = t; }
+    return [buf.toString('utf8').replace(/\0[\s\S]*$/, '').replace(/[^\x09\x0a\x0d\x20-\x7e]+$/, '')];
+  }
   const stride = registerStride(format);
   const out = [];
   for (let i = 0; i + stride <= regs.length; i += stride) {
@@ -432,10 +452,14 @@ export const verbs = {
     const count = ctx.params?.count ?? 8;
     const format = ctx.params?.format ?? 'uint16';
     const order = orderOf(ctx);
+    const gain = ctx.params?.gain ?? 1;
+    const offset = ctx.params?.offset ?? 0;
     try {
       const r = await doRead(ctx, area, address, count, format, order);
       const isReg = r.decoded?.type === 'registers';
       const wide = registerStride(format) > 1;
+      const scaled = r.decoded ? { ...r.decoded, values: scaleValues(r.decoded.values, gain, offset) } : null;
+      const isScaled = isReg && format !== 'string' && (gain !== 1 || offset !== 0);
       return {
         artifact: makeArtifact({
           verb: 'read',
@@ -446,10 +470,11 @@ export const verbs = {
             address,
             count,
             format: isReg ? format : undefined,
-            byte_order: isReg && wide ? order : undefined,
-            values: r.decoded ? r.decoded.values : null,
+            byte_order: isReg && wide && format !== 'string' ? order : undefined,
+            scaling: isScaled ? { gain, offset } : undefined,
+            values: scaled ? scaled.values : null,
             registers: isReg && format !== 'uint16' ? r.decoded.registers : undefined,
-            tree: r.decoded ? valueTree(area, address, r.decoded, format) : undefined,
+            tree: scaled ? valueTree(area, address, scaled, format) : undefined,
             exception: r.parsed.exception ? r.parsed.exception_text : null,
             rtt_ms: r.rttMs,
           },
