@@ -26,7 +26,7 @@ tiers (hardware-gated), real-time buses (observe-only), and L2/pcap capture.
 | **Driver contract** (capability manifest + 9 verbs → uniform `Artifact`) | ✅ `server/src/contract` |
 | **Evidence store** (SQLite metadata + blob files, replay, session diff, audit) | ✅ `server/src/evidence` |
 | **Diagnostic rules engine** (declarative YAML rulepacks → verdicts, hot-loadable) | ✅ `server/src/rules` |
-| **Session orchestrator** (ARM state machine, rate budget, monitor loops) | ✅ `server/src/orchestrator` |
+| **Session orchestrator** (ARM state machine, rate budget, monitor loops with a stored loss/jitter **summary verdict** on stop — the flaky-link story for every driver) | ✅ `server/src/orchestrator` |
 | **Double-gated write path** (ARM + per-write confirm + read-back + mandatory audit, §4.1) | ✅ |
 | **Commissioning report export** (self-contained HTML, findings-first, credential redaction, §12.8) | ✅ `server/src/report` |
 | **Config backup & drift detection** (capture a device's readable config as a named baseline, diff two baselines or recheck against a live re-capture, export/import baselines as portable JSON, and a live drift watch that re-checks on an interval) | ✅ `server/src/backup` |
@@ -122,7 +122,7 @@ run **Diagnose** (→ "Modbus responding normally"), **Read**, or the **Write** 
 ## Tests
 
 ```bash
-npm test     # 129 tests: contract, rules, evidence, the double-gate, and every
+npm test     # 132 tests: contract, rules, evidence, the double-gate, and every
              # driver end-to-end against its own simulator
 ```
 

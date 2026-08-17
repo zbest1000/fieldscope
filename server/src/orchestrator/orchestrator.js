@@ -290,16 +290,51 @@ export class Orchestrator {
     };
 
     const timer = setInterval(tick, cadence);
-    this.monitors.set(monitorId, { timer, sessionId });
+    this.monitors.set(monitorId, { timer, sessionId, driverId: rt.driverId, stats });
     tick();
     return { monitorId, cadence };
   }
 
+  // Summarize a monitor run's samples into loss / jitter / latency facts and a
+  // plain-English verdict (the "flaky link" story), stored as an artifact so the
+  // run lands in the session timeline and evidence like any other verb.
+  #monitorSummary(m) {
+    const s = m.stats;
+    if (!s || s.count === 0) return null;
+    const values = s.samples.filter((x) => typeof x.value === 'number').map((x) => x.value);
+    const lossPct = Math.round(((s.count - s.ok) / s.count) * 100);
+    const jitter = stddev(values);
+    const result = {
+      samples: s.count,
+      ok: s.ok,
+      loss_pct: lossPct,
+      min_ms: isFinite(s.min) ? round3(s.min) : null,
+      max_ms: isFinite(s.max) ? round3(s.max) : null,
+      avg_ms: s.ok ? round3(s.sum / s.ok) : null,
+      jitter_ms: round3(jitter),
+    };
+    const facts = { monitor: { samples: s.count, loss_pct: lossPct, jitter_ms: jitter, avg_ms: result.avg_ms, up: s.ok > 0 } };
+    const verdicts = this.rules.evaluate('monitor', facts);
+    return { result, facts, verdicts };
+  }
+
   stopMonitor(monitorId) {
     const m = this.monitors.get(monitorId);
-    if (m) {
-      clearInterval(m.timer);
-      this.monitors.delete(monitorId);
+    if (!m) return { stopped: true };
+    clearInterval(m.timer);
+    this.monitors.delete(monitorId);
+    const summary = this.#monitorSummary(m);
+    if (summary) {
+      const artifact = {
+        verb: 'monitor',
+        raw: null,
+        decode: null,
+        result: summary.result,
+        verdicts: summary.verdicts,
+      };
+      const saved = this.store.saveArtifact(m.sessionId, m.driverId, artifact, null);
+      this.emit('artifact', { sessionId: m.sessionId, artifact: saved });
+      return { stopped: true, summary: summary.result, verdicts: summary.verdicts, artifactId: saved.id };
     }
     return { stopped: true };
   }
@@ -345,6 +380,10 @@ function stddev(xs) {
   if (xs.length < 2) return 0;
   const m = xs.reduce((a, b) => a + b, 0) / xs.length;
   return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+}
+
+function round3(n) {
+  return n == null ? null : Math.round(n * 1000) / 1000;
 }
 
 function nowMs() {

@@ -366,10 +366,12 @@ export function MonitorPanel({ driver }) {
   const { session, monitor, flash } = useStore();
   const [params, setParams] = useState(() => defaultsFor(driver.params?.monitor));
   const [monitorId, setMonitorId] = useState(null);
+  const [summary, setSummary] = useState(null);
   useEffect(() => setParams(defaultsFor(driver.params?.monitor)), [driver.id]);
 
   async function start() {
     try {
+      setSummary(null);
       const r = await api.startMonitor(session.id, params);
       setMonitorId(r.monitorId);
     } catch (e) {
@@ -377,7 +379,10 @@ export function MonitorPanel({ driver }) {
     }
   }
   async function stop() {
-    if (monitorId) await api.stopMonitor(monitorId);
+    if (monitorId) {
+      const r = await api.stopMonitor(monitorId).catch(() => null);
+      if (r?.verdicts?.length) setSummary(r);
+    }
     setMonitorId(null);
   }
   useEffect(() => () => { if (monitorId) api.stopMonitor(monitorId).catch(() => {}); }, [monitorId]);
@@ -398,7 +403,7 @@ export function MonitorPanel({ driver }) {
           </span>
         )}
       </div>
-      {monitor ? (
+      {monitorId && monitor ? (
         <div className="mt-5">
           <Sparkline series={monitor.series || []} />
           {stats && (
@@ -411,6 +416,18 @@ export function MonitorPanel({ driver }) {
             </div>
           )}
           <div className="text-center text-xs text-slate-500 mt-2">jitter (σ) {fmt(stats?.jitter)} ms</div>
+        </div>
+      ) : summary ? (
+        <div className="mt-5 space-y-3">
+          {summary.verdicts.map((v, i) => <Verdict key={i} v={v} />)}
+          <div className="grid grid-cols-5 gap-2">
+            <Stat label="samples" value={summary.summary.samples} />
+            <Stat label="loss %" value={summary.summary.loss_pct} warn={summary.summary.loss_pct > 0} unit="%" />
+            <Stat label="min" value={fmt(summary.summary.min_ms)} unit="ms" />
+            <Stat label="avg" value={fmt(summary.summary.avg_ms)} unit="ms" />
+            <Stat label="jitter" value={fmt(summary.summary.jitter_ms)} unit="ms" />
+          </div>
+          <div className="text-center text-[11px] text-slate-600">Monitor summary stored to the session evidence.</div>
         </div>
       ) : (
         <div className="mt-5"><EmptyState title="Not monitoring" icon="activity">Start a monitor to stream RTT, loss, and jitter with a rolling sparkline.</EmptyState></div>

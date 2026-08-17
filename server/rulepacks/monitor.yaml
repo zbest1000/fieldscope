@@ -1,0 +1,57 @@
+# Monitor rulepack (§5). Driver-agnostic: evaluated when a monitor run is
+# stopped, over the accumulated loss / jitter / latency of its samples. This is
+# the "baseline a link, then see it degrade" story — the same shape whether the
+# samples came from ICMP RTT, a Modbus register poll, or an OPC UA handshake.
+
+rulepack: monitor
+rules:
+  - id: link-down
+    when:
+      monitor.up: false
+    verdict:
+      severity: error
+      title: "Target did not respond for the entire monitor run"
+      detail: >
+        Every sample failed — the endpoint was unreachable for the whole
+        window. This is a hard outage, not intermittent loss.
+      next_steps:
+        - "Confirm the target is powered and on the network"
+        - "Check for a pulled cable, wrong address, or a firewall change"
+
+  - id: intermittent-loss
+    when:
+      monitor.up: true
+      monitor.loss_pct: { gte: 5 }
+    verdict:
+      severity: warn
+      title: "Intermittent packet loss on this link"
+      detail: >
+        The target answered, but a meaningful fraction of samples were dropped
+        over the window. Intermittent loss like this is the signature of a
+        marginal cable, a duplex mismatch, or an overloaded gateway — the faults
+        that come and go and are hardest to catch with a single probe.
+      next_steps:
+        - "Re-seat / swap the suspect cable and re-run the monitor"
+        - "Correlate with SNMP per-port error counters to localize the bad segment"
+
+  - id: high-jitter
+    when:
+      monitor.up: true
+      monitor.loss_pct: { lt: 5 }
+      monitor.jitter_ms: { gt: 50 }
+    verdict:
+      severity: warn
+      title: "High latency jitter"
+      detail: >
+        Loss is low but round-trip time is swinging widely (jitter > 50 ms).
+        Unstable latency degrades real-time control and time sync even when no
+        packets are lost — check for congestion or a device under load.
+
+  - id: stable
+    when:
+      monitor.up: true
+      monitor.loss_pct: { lt: 5 }
+    verdict:
+      severity: ok
+      title: "Link stable over the monitor window"
+      detail: "Low loss and bounded jitter across the sampled window — a healthy, stable link."

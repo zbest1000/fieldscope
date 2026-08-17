@@ -1391,6 +1391,43 @@ async function main() {
     bakSim.server.close();
   }
 
+  // ---- monitor summary verdicts ----
+  console.log('monitor summary (verdicts)');
+  await test('monitor rulepack classifies loss / jitter / down', async () => {
+    const { rules } = makeStack();
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: false, loss_pct: 100 } })[0].rule_id, 'link-down');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 12, jitter_ms: 3 } })[0].rule_id, 'intermittent-loss');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 0, jitter_ms: 120 } })[0].rule_id, 'high-jitter');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 0, jitter_ms: 5 } })[0].rule_id, 'stable');
+  });
+  await test('stopping a healthy monitor stores a stable-link summary artifact', async () => {
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    const mon = orchestrator.startMonitor(ses.id, { cadence: 250 });
+    await new Promise((r) => setTimeout(r, 700));
+    const stop = orchestrator.stopMonitor(mon.monitorId);
+    assert.ok(stop.summary.samples >= 2, 'expected multiple samples');
+    assert.strictEqual(stop.summary.loss_pct, 0);
+    assert.strictEqual(stop.verdicts[0].rule_id, 'stable');
+    // Landed in the session timeline as a monitor artifact with its verdict.
+    const arts = store.listArtifacts(ses.id);
+    const summary = arts.find((a) => a.verb === 'monitor');
+    assert.ok(summary && summary.verdicts[0].severity === 'ok');
+  });
+  await test('stopping a monitor on a dead port stores a link-down verdict', async () => {
+    const { orchestrator } = makeStack();
+    // A refused TCP port: bind then close so connects fail immediately.
+    const tmp = net.createServer();
+    const deadPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: deadPort, unitId: 1 });
+    const mon = orchestrator.startMonitor(ses.id, { cadence: 250 });
+    await new Promise((r) => setTimeout(r, 700));
+    const stop = orchestrator.stopMonitor(mon.monitorId);
+    assert.strictEqual(stop.summary.loss_pct, 100);
+    assert.strictEqual(stop.verdicts[0].rule_id, 'link-down');
+    assert.strictEqual(stop.verdicts[0].severity, 'error');
+  });
+
   // ---- commissioning report (§12 phase 8) ----
   console.log('commissioning report');
   await test('report renders findings, timeline, and audit with redaction', async () => {
