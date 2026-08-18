@@ -338,8 +338,10 @@ export function DiagnosePanel() {
 
   return (
     <div className="max-w-4xl animate-fade-in">
-      <div className="flex items-start gap-3 mb-4 rounded-lg border border-emerald-500/20 bg-emerald-500/[0.04] px-4 py-3">
-        <Icon name="shield" size={18} className="text-emerald-400 mt-0.5" />
+      <div className="flex items-start gap-3 mb-4 rounded-xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/[0.09] to-transparent shadow-[0_8px_28px_-14px_rgba(16,185,129,0.4)] px-4 py-3">
+        <span className="grid place-items-center h-8 w-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 shadow-inner-hi mt-0.5 shrink-0">
+          <Icon name="shield" size={17} strokeWidth={2} />
+        </span>
         <p className="text-[13px] text-slate-400 leading-relaxed">
           Diagnose correlates the driver's results and transport facts through its YAML rulepack into a plain-English
           verdict — <span className="text-slate-300">what is wrong and why</span>, with next steps.
@@ -438,8 +440,8 @@ export function MonitorPanel({ driver }) {
 
 function Stat({ label, value, warn, unit }) {
   return (
-    <div className={`rounded-lg border bg-panel py-2.5 text-center ${warn ? 'border-amber-500/40 bg-amber-500/[0.06]' : 'border-edge'}`}>
-      <div className={`text-lg font-mono tabular-nums ${warn ? 'text-amber-400' : 'text-slate-100'}`}>
+    <div className={`rounded-xl border py-2.5 text-center shadow-inner-hi ${warn ? 'border-amber-500/40 bg-gradient-to-b from-amber-500/[0.1] to-transparent' : 'surface'}`}>
+      <div className={`text-lg font-mono tabular-nums ${warn ? 'text-amber-300' : 'text-slate-100'}`}>
         {value ?? '—'}{value != null && value !== '—' && unit && <span className="text-[10px] text-slate-500 ml-0.5">{unit}</span>}
       </div>
       <div className="text-[10px] uppercase tracking-wider text-slate-500">{label}</div>
@@ -477,7 +479,7 @@ function Sparkline({ series }) {
     ? `M${areaPts[0].x.toFixed(1)},${H} ` + areaPts.map((p) => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ') + ` L${areaPts[areaPts.length - 1].x.toFixed(1)},${H} Z`
     : '';
   return (
-    <div className="rounded-lg border border-edge bg-ink p-2">
+    <div className="rounded-xl border border-edge bg-ink/80 p-2 shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-32" preserveAspectRatio="none">
         <defs>
           <linearGradient id="spark" x1="0" y1="0" x2="0" y2="1">

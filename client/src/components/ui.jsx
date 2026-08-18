@@ -55,16 +55,16 @@ export function Icon({ name, size = 16, className = '', strokeWidth = 1.75, fill
 // Severity system
 // ---------------------------------------------------------------------------
 export const SEV_STYLE = {
-  ok: { icon: 'ok', dot: 'bg-emerald-500', text: 'text-emerald-400', border: 'border-emerald-500/40', bg: 'bg-emerald-500/10', bar: 'bg-emerald-500', ring: 'ring-emerald-500/30' },
-  info: { icon: 'info', dot: 'bg-sky-500', text: 'text-sky-400', border: 'border-sky-500/40', bg: 'bg-sky-500/10', bar: 'bg-sky-500', ring: 'ring-sky-500/30' },
-  warn: { icon: 'warn', dot: 'bg-amber-500', text: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/10', bar: 'bg-amber-500', ring: 'ring-amber-500/30' },
-  error: { icon: 'error', dot: 'bg-rose-500', text: 'text-rose-400', border: 'border-rose-500/40', bg: 'bg-rose-500/10', bar: 'bg-rose-500', ring: 'ring-rose-500/30' },
+  ok: { icon: 'ok', dot: 'bg-emerald-500', text: 'text-emerald-400', border: 'border-emerald-500/40', bg: 'bg-emerald-500/10', bar: 'bg-emerald-500', ring: 'ring-emerald-500/30', glow: 'shadow-[0_8px_28px_-12px_rgba(16,185,129,0.5)]', grad: 'from-emerald-500/[0.12]' },
+  info: { icon: 'info', dot: 'bg-sky-500', text: 'text-sky-400', border: 'border-sky-500/40', bg: 'bg-sky-500/10', bar: 'bg-sky-500', ring: 'ring-sky-500/30', glow: 'shadow-[0_8px_28px_-12px_rgba(56,189,248,0.45)]', grad: 'from-sky-500/[0.12]' },
+  warn: { icon: 'warn', dot: 'bg-amber-500', text: 'text-amber-400', border: 'border-amber-500/40', bg: 'bg-amber-500/10', bar: 'bg-amber-500', ring: 'ring-amber-500/30', glow: 'shadow-[0_8px_28px_-12px_rgba(245,158,11,0.5)]', grad: 'from-amber-500/[0.12]' },
+  error: { icon: 'error', dot: 'bg-rose-500', text: 'text-rose-400', border: 'border-rose-500/40', bg: 'bg-rose-500/10', bar: 'bg-rose-500', ring: 'ring-rose-500/30', glow: 'shadow-[0_8px_28px_-12px_rgba(244,63,94,0.5)]', grad: 'from-rose-500/[0.12]' },
 };
 
 export function SeverityChip({ severity }) {
   const s = SEV_STYLE[severity] || SEV_STYLE.info;
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${s.text} ${s.bg}`}>
+    <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${s.text} ${s.bg} ${s.border}`}>
       <Icon name={s.icon} size={11} strokeWidth={2.25} />
       {severity}
     </span>
@@ -76,8 +76,9 @@ export function SeverityChip({ severity }) {
 export function Verdict({ v }) {
   const s = SEV_STYLE[v.severity] || SEV_STYLE.info;
   return (
-    <div className={`relative overflow-hidden rounded-lg border ${s.border} ${s.bg} pl-4 pr-4 py-3 mb-2.5 animate-fade-in`}>
+    <div className={`relative overflow-hidden rounded-xl border ${s.border} bg-gradient-to-br ${s.grad} to-transparent ${s.glow} pl-4 pr-4 py-3 mb-2.5 animate-fade-in`}>
       <span className={`absolute left-0 top-0 h-full w-1 ${s.bar}`} />
+      <span className="absolute inset-0 pointer-events-none shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)] rounded-xl" />
       <div className="flex items-start gap-2.5">
         <span className={`mt-0.5 ${s.text}`}><Icon name={s.icon} size={18} strokeWidth={2} /></span>
         <div className="flex-1 min-w-0">

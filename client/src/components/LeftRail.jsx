@@ -122,9 +122,9 @@ export default function LeftRail({ view, setView }) {
                         selectDriver(d.id);
                         setView('workspace');
                       }}
-                      className={`group w-full text-left pl-3 pr-2.5 py-1.5 flex items-center gap-2.5 border-l-2 ${
+                      className={`group w-full text-left pl-3 pr-2.5 py-1.5 flex items-center gap-2.5 border-l-2 transition-colors ${
                         active
-                          ? 'bg-white/5 text-slate-100 border-emerald-500'
+                          ? 'bg-gradient-to-r from-emerald-500/[0.12] to-transparent text-slate-100 border-emerald-500 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]'
                           : 'text-slate-400 border-transparent hover:bg-white/[0.03] hover:text-slate-200'
                       }`}
                     >
@@ -148,8 +148,8 @@ function NavItem({ icon, label, active, onClick }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm font-medium ${
-        active ? 'bg-white/5 text-slate-100' : 'text-slate-400 hover:bg-white/[0.03] hover:text-slate-200'
+      className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors ${
+        active ? 'bg-gradient-to-b from-white/[0.08] to-white/[0.02] text-slate-100 border border-white/10 shadow-inner-hi' : 'text-slate-400 border border-transparent hover:bg-white/[0.03] hover:text-slate-200'
       }`}
     >
       <Icon name={icon} size={16} />
