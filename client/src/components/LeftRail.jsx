@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store.js';
-import { Icon, Input } from './ui.jsx';
+import { Icon, Input, Kbd } from './ui.jsx';
+
+// Open the command palette by re-emitting the global shortcut it listens for.
+const openPalette = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true }));
 
 // Left-rail workspace navigation (§7). Drivers grouped by domain; the active one
 // drives which workspace renders. A search box filters the whole catalog.
@@ -75,8 +78,15 @@ export default function LeftRail({ view, setView }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Filter protocols…"
-            className="w-full pl-8 py-1.5"
+            className="w-full pl-8 pr-12 py-1.5"
           />
+          <button
+            onClick={openPalette}
+            title="Open command palette (⌘K)"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 hover:opacity-100 opacity-70"
+          >
+            <Kbd>⌘K</Kbd>
+          </button>
         </div>
         <button
           onClick={toggleAll}

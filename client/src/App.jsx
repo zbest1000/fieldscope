@@ -6,6 +6,7 @@ import Workspace from './components/Workspace.jsx';
 import EvidenceDrawer from './components/EvidenceDrawer.jsx';
 import Home from './components/Home.jsx';
 import Evidence from './components/Evidence.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
 import { Icon, Spinner } from './components/ui.jsx';
 
 export default function App() {
@@ -41,6 +42,7 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <TopBar />
+      <CommandPalette setView={setView} />
       <div className="flex-1 flex min-h-0">
         <LeftRail view={view} setView={setView} />
         <div className="flex-1 flex flex-col min-w-0">
