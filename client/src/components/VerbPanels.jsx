@@ -92,8 +92,8 @@ function ResultView({ verb, result }) {
     return (
       <div className="space-y-3">
         {result.tree.map((area, i) => (
-          <div key={i} className="rounded-lg border border-edge overflow-hidden">
-            <div className="px-3 py-2 bg-white/[0.03] text-[11px] uppercase tracking-wider text-slate-400 border-b border-edge flex items-center gap-2">
+          <div key={i} className="surface rounded-xl overflow-hidden">
+            <div className="px-3 py-2 bg-gradient-to-b from-white/[0.05] to-transparent text-[11px] uppercase tracking-wider text-slate-400 border-b border-edge flex items-center gap-2">
               <Icon name="layers" size={13} className="text-slate-500" />
               {area.area}
               {area.error && <span className="text-rose-400 normal-case ml-auto">{area.error}</span>}

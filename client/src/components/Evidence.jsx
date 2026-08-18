@@ -176,7 +176,7 @@ function Timeline({ session, artifacts, onCapture }) {
       ) : (
         <div className="space-y-2">
           {artifacts.map((a) => (
-            <div key={a.id} className="rounded-lg border border-edge overflow-hidden">
+            <div key={a.id} className="surface rounded-xl overflow-hidden">
               <div className="px-3 py-1.5 bg-white/[0.02] border-b border-edge flex items-center gap-2 text-xs">
                 <span className="font-mono text-slate-600">#{a.seq}</span>
                 <span className="text-slate-200 capitalize font-medium">{a.verb}</span>
@@ -206,10 +206,10 @@ function DiffView({ rows }) {
         <Badge tone={changed ? 'amber' : 'emerald'}>{changed} changed</Badge>
         <span className="text-xs text-slate-500">what changed since it last worked</span>
       </div>
-      <div className="rounded-lg border border-edge overflow-hidden">
+      <div className="surface rounded-xl overflow-hidden">
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-white/[0.03] text-slate-500">
+            <tr className="bg-gradient-to-b from-white/[0.05] to-transparent text-slate-500">
               <th className="px-3 py-2 text-left font-medium">verb</th>
               <th className="px-3 py-2 text-left font-medium">before (A)</th>
               <th className="px-3 py-2 text-left font-medium">after (B)</th>
@@ -256,10 +256,10 @@ function BackupsView({ backups, pick, watches, onToggle, onDrift, onRecheck, onT
       {backups.length === 0 ? (
         <EmptyState title="No baselines yet" icon="layers">Open a session and use “Save config baseline”, or import one.</EmptyState>
       ) : (
-        <div className="rounded-lg border border-edge overflow-hidden">
+        <div className="surface rounded-xl overflow-hidden">
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-white/[0.03] text-slate-500">
+              <tr className="bg-gradient-to-b from-white/[0.05] to-transparent text-slate-500">
                 {['', 'name', 'driver', 'address', 'points', 'captured', ''].map((h, i) => (
                   <th key={i} className="px-3 py-2 text-left font-medium">{h}</th>
                 ))}
@@ -311,10 +311,10 @@ function DriftView({ drift }) {
       {shown.length === 0 ? (
         <EmptyState title="No drift — every point matches the baseline" icon="ok" />
       ) : (
-        <div className="rounded-lg border border-edge overflow-hidden">
+        <div className="surface rounded-xl overflow-hidden">
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-white/[0.03] text-slate-500">
+              <tr className="bg-gradient-to-b from-white/[0.05] to-transparent text-slate-500">
                 {['', 'point', 'baseline', 'current'].map((h, i) => (
                   <th key={i} className="px-3 py-2 text-left font-medium">{h}</th>
                 ))}
@@ -356,10 +356,10 @@ function AuditView({ audit }) {
         Non-disableable. Every ARM, disarm, and write is recorded with before/after and the confirmation. Select a
         session at left to replay its timeline, or check two to diff them.
       </p>
-      <div className="rounded-lg border border-edge overflow-hidden">
+      <div className="surface rounded-xl overflow-hidden">
         <table className="w-full text-xs">
           <thead>
-            <tr className="bg-white/[0.03] text-slate-500">
+            <tr className="bg-gradient-to-b from-white/[0.05] to-transparent text-slate-500">
               {['time', 'action', 'target', 'point', 'before → after'].map((h) => (
                 <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>
               ))}

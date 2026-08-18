@@ -9,7 +9,7 @@ export default function EvidenceDrawer() {
   const [open, setOpen] = useState(true);
 
   return (
-    <div className="border-t border-edge bg-panel2 shrink-0">
+    <div className="border-t border-edge glass shadow-[0_-8px_24px_-16px_rgba(0,0,0,0.8)] shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
         className="w-full flex items-center gap-2 px-4 py-2 text-xs text-slate-400 hover:text-slate-200"

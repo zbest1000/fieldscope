@@ -39,7 +39,7 @@ export default function Workspace() {
   return (
     <div className="flex-1 flex flex-col min-w-0">
       {/* Target bar */}
-      <div className="flex items-end gap-3 px-5 py-3 border-b border-edge bg-panel2/60">
+      <div className="flex items-end gap-3 px-5 py-3 border-b border-edge glass">
         <div className="self-center mr-1">
           <div className="text-slate-100 font-semibold leading-tight">{driver.display_name}</div>
           <div className="flex items-center gap-1.5 text-[11px] mt-0.5">
@@ -69,14 +69,18 @@ export default function Workspace() {
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`relative flex items-center gap-1.5 px-3.5 py-2.5 text-sm capitalize ${
-              activeTab === t ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200'
-            } ${t === 'write' ? 'text-hazard/90' : ''}`}
+            className={`relative flex items-center gap-1.5 mt-1 px-3.5 py-2 rounded-t-md text-sm capitalize transition-colors ${
+              activeTab === t
+                ? 'text-slate-100 bg-gradient-to-b from-white/[0.05] to-transparent'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.02]'
+            } ${t === 'write' ? (activeTab === t ? 'text-hazard' : 'text-hazard/80') : ''}`}
           >
             <Icon name={VERB_ICON[t] || 'dot'} size={14} />
             {t}
             {t === 'diagnose' && <span className="h-1 w-1 rounded-full bg-emerald-500" />}
-            {activeTab === t && <span className="absolute left-2 right-2 -bottom-px h-0.5 rounded-full bg-emerald-500" />}
+            {activeTab === t && (
+              <span className={`absolute left-2 right-2 -bottom-px h-0.5 rounded-full ${t === 'write' ? 'bg-hazard' : 'bg-emerald-500'} shadow-[0_0_8px_rgba(16,185,129,0.6)]`} />
+            )}
           </button>
         ))}
       </div>
