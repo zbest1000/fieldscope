@@ -92,9 +92,9 @@ export default function CommandPalette({ setView }) {
 
   return (
     <div className="fixed inset-0 z-[60] flex items-start justify-center pt-[12vh] px-4" onMouseDown={() => setOpen(false)}>
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-[1px]" />
+      <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" />
       <div
-        className="relative w-full max-w-xl rounded-xl border border-edge2 bg-panel shadow-pop overflow-hidden animate-fade-in"
+        className="relative w-full max-w-xl rounded-2xl border border-edge2 glass shadow-pop overflow-hidden animate-scale-in ring-1 ring-white/5"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 px-3.5 border-b border-edge">

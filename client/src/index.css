@@ -14,14 +14,58 @@ body,
 }
 
 body {
-  /* Deep instrument background with a faint top glow for depth. */
+  /* Deep instrument background: layered accent glows + a faint engineering grid
+     so large empty areas read as a lit workspace rather than a flat fill. */
   background:
-    radial-gradient(1200px 500px at 50% -10%, rgba(16, 185, 129, 0.06), transparent 60%),
-    #090d12;
+    radial-gradient(900px 420px at 50% -8%, rgba(16, 185, 129, 0.07), transparent 62%),
+    radial-gradient(700px 500px at 100% 0%, rgba(56, 189, 248, 0.05), transparent 55%),
+    linear-gradient(rgba(148, 163, 184, 0.022) 1px, transparent 1px) 0 0 / 100% 44px,
+    linear-gradient(90deg, rgba(148, 163, 184, 0.022) 1px, transparent 1px) 0 0 / 44px 100%,
+    #080b10;
   color: #cbd5e1;
   font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+/* Heading polish: tighter optical tracking at larger sizes. */
+h1 { letter-spacing: -0.02em; }
+h2 { letter-spacing: -0.01em; }
+
+/* ---- Elevation helpers ------------------------------------------------------
+   `.surface` is a lit panel (top highlight + soft cast). Compose with hover
+   lift via `.lift`. Kept as small utilities so components stay declarative. */
+@layer components {
+  .surface {
+    background-color: #121a24;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 42%);
+    border: 1px solid #1f2b38;
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 2px 10px -2px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  }
+  .lift {
+    transition:
+      transform 0.14s ease,
+      box-shadow 0.14s ease,
+      border-color 0.14s ease,
+      background-color 0.14s ease;
+  }
+  .lift:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 6px 18px -6px rgba(0, 0, 0, 0.55),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+  }
+  /* Frosted floating chrome (top bar, palette, popovers). */
+  .glass {
+    background-color: rgba(13, 20, 28, 0.72);
+    backdrop-filter: blur(12px) saturate(1.2);
+    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  }
 }
 
 /* The armed hazard state re-colors the whole chrome (§4.1). */

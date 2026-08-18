@@ -32,13 +32,13 @@ export default function TopBar() {
 
   return (
     <div
-      className={`relative flex items-center gap-4 px-4 h-14 border-b border-edge bg-panel2/80 backdrop-blur text-sm shrink-0 ${
-        armed ? 'armed-chrome bg-[#2a1f08]' : ''
+      className={`relative z-30 flex items-center gap-4 px-4 h-14 border-b border-edge glass shadow-[0_1px_0_0_rgba(255,255,255,0.03),0_8px_24px_-16px_rgba(0,0,0,0.8)] text-sm shrink-0 ${
+        armed ? 'armed-chrome bg-[#2a1f08]/85' : ''
       }`}
     >
       {/* Brand */}
       <div className="flex items-center gap-2.5">
-        <div className={`grid place-items-center h-8 w-8 rounded-lg ${armed ? 'bg-hazard text-black' : 'bg-emerald-500/15 text-emerald-400'}`}>
+        <div className={`grid place-items-center h-8 w-8 rounded-lg border shadow-inner-hi ${armed ? 'bg-btn-hazard text-black border-amber-300/60' : 'bg-gradient-to-b from-emerald-400/25 to-emerald-600/10 text-emerald-300 border-emerald-500/30 shadow-glow-accent'}`}>
           <Icon name="activity" size={18} strokeWidth={2.25} />
         </div>
         <div className="leading-tight">
@@ -72,8 +72,8 @@ export default function TopBar() {
 
       {/* LIVE / READ-ONLY state pill */}
       <span
-        className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border ${
-          armed ? 'bg-hazard text-black border-hazard animate-pulse-hazard' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+        className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border shadow-inner-hi ${
+          armed ? 'bg-btn-hazard text-black border-amber-300/60 animate-pulse-hazard shadow-glow-hazard' : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
         }`}
       >
         <Icon name={armed ? 'bolt' : 'shield'} size={13} strokeWidth={2.25} />

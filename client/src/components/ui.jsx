@@ -109,11 +109,11 @@ export function Verdict({ v }) {
 // Buttons
 // ---------------------------------------------------------------------------
 const BTN_VARIANTS = {
-  default: 'bg-raised/60 border-edge2 text-slate-200 hover:bg-raised hover:border-slate-500',
-  primary: 'bg-emerald-600 border-emerald-500 text-white hover:bg-emerald-500 shadow-sm shadow-emerald-900/40',
-  hazard: 'bg-hazard border-hazard text-black font-semibold hover:brightness-110',
+  default: 'bg-raised/60 border-edge2 text-slate-200 shadow-inner-hi hover:bg-raised hover:border-slate-500',
+  primary: 'bg-btn-primary border-emerald-400/50 text-white shadow-[0_1px_0_0_rgba(255,255,255,0.18)_inset,0_4px_14px_-4px_rgba(16,185,129,0.6)] hover:brightness-[1.08] active:brightness-95',
+  hazard: 'bg-btn-hazard border-amber-300/60 text-black font-semibold shadow-[0_1px_0_0_rgba(255,255,255,0.35)_inset,0_4px_14px_-4px_rgba(245,158,11,0.6)] hover:brightness-105',
   ghost: 'bg-transparent border-transparent text-slate-400 hover:text-slate-100 hover:bg-white/5',
-  subtle: 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10',
+  subtle: 'bg-white/5 border-white/10 text-slate-300 shadow-inner-hi hover:bg-white/10',
 };
 const BTN_SIZES = { sm: 'px-2.5 py-1 text-xs', md: 'px-3.5 py-1.5 text-sm', lg: 'px-4 py-2 text-sm' };
 
@@ -122,7 +122,7 @@ export function Btn({ children, onClick, disabled, busy, variant = 'default', si
     <button
       onClick={onClick}
       disabled={disabled || busy}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md border font-medium disabled:opacity-40 disabled:cursor-not-allowed ${BTN_VARIANTS[variant]} ${BTN_SIZES[size]} ${className}`}
+      className={`inline-flex items-center justify-center gap-1.5 rounded-md border font-medium transition-[filter,background-color,border-color,transform] active:translate-y-px disabled:opacity-40 disabled:cursor-not-allowed disabled:active:translate-y-0 ${BTN_VARIANTS[variant]} ${BTN_SIZES[size]} ${className}`}
       {...rest}
     >
       {busy ? <Spinner size={14} /> : icon ? <Icon name={icon} size={size === 'sm' ? 13 : 15} /> : null}
@@ -154,7 +154,7 @@ export function Field({ label, children, hint }) {
 }
 
 const INPUT_CLASS =
-  'bg-ink border border-edge rounded-md px-2.5 py-1.5 text-sm text-slate-100 placeholder-slate-600 focus:border-emerald-500/60 hover:border-edge2';
+  'bg-ink/80 border border-edge rounded-md px-2.5 py-1.5 text-sm text-slate-100 placeholder-slate-600 shadow-[inset_0_1px_2px_rgba(0,0,0,0.35)] focus:border-emerald-500/60 focus:bg-ink hover:border-edge2';
 
 export function Input({ className = '', ...rest }) {
   return <input className={`${INPUT_CLASS} ${className}`} {...rest} />;
@@ -171,7 +171,7 @@ export function Select({ className = '', children, ...rest }) {
 // Layout atoms
 // ---------------------------------------------------------------------------
 export function Card({ children, className = '' }) {
-  return <div className={`rounded-lg border border-edge bg-panel shadow-card ${className}`}>{children}</div>;
+  return <div className={`surface rounded-xl ${className}`}>{children}</div>;
 }
 
 export function Badge({ children, tone = 'slate', className = '' }) {
@@ -191,7 +191,7 @@ export function Badge({ children, tone = 'slate', className = '' }) {
 export function EmptyState({ icon = 'layers', title, children }) {
   return (
     <div className="flex flex-col items-center justify-center text-center py-16 px-6 animate-fade-in">
-      <div className="mb-3 grid place-items-center h-12 w-12 rounded-full bg-white/5 text-slate-500">
+      <div className="mb-3 grid place-items-center h-14 w-14 rounded-2xl bg-gradient-to-b from-white/[0.07] to-white/[0.01] border border-white/10 text-slate-500 shadow-inner-hi">
         <Icon name={icon} size={22} />
       </div>
       <div className="text-slate-300 font-medium">{title}</div>

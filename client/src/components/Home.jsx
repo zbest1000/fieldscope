@@ -21,8 +21,10 @@ export default function Home({ setView }) {
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Hero */}
-      <div className="px-8 pt-8 pb-6 border-b border-edge bg-gradient-to-b from-emerald-500/[0.04] to-transparent">
-        <h1 className="text-2xl font-semibold text-slate-100 tracking-tight">Fieldscope</h1>
+      <div className="relative px-8 pt-9 pb-7 border-b border-edge overflow-hidden">
+        <div className="pointer-events-none absolute -top-24 left-1/3 h-56 w-[36rem] rounded-full bg-emerald-500/[0.07] blur-3xl" />
+        <div className="pointer-events-none absolute -top-16 right-10 h-40 w-80 rounded-full bg-sky-500/[0.05] blur-3xl" />
+        <h1 className="relative text-[1.75rem] font-semibold text-slate-50 tracking-tight">Fieldscope</h1>
         <p className="text-sm text-slate-400 max-w-2xl mt-2 leading-relaxed">
           A read-only, evidence-first diagnostics workbench. Every probe, poll, and browse is captured as an artifact
           with raw bytes, a decode, and a plain-English verdict — then replayed, diffed, and exported. One workbench
@@ -55,13 +57,14 @@ export default function Home({ setView }) {
               <h2 className={`text-xs font-semibold uppercase tracking-wider ${dom.accent}`}>{dom.label}</h2>
               <span className="text-xs text-slate-600">{byDomain[dom.key].length}</span>
             </div>
-            <div className="rounded-lg border border-edge overflow-hidden divide-y divide-edge/60">
+            <div className="surface rounded-xl overflow-hidden divide-y divide-edge/60">
               {byDomain[dom.key].map((d) => (
                 <button
                   key={d.id}
                   onClick={() => { selectDriver(d.id); setView('workspace'); }}
-                  className="group w-full text-left flex items-center gap-4 px-4 py-3 hover:bg-white/[0.03]"
+                  className="group relative w-full text-left flex items-center gap-4 px-4 py-3 hover:bg-white/[0.035] transition-colors"
                 >
+                  <span className="absolute left-0 top-0 h-full w-0.5 bg-emerald-500/0 group-hover:bg-emerald-500/60 transition-colors" />
                   <div className="w-52 shrink-0">
                     <div className="flex items-center gap-2">
                       <span className="text-slate-100 font-medium">{d.display_name}</span>
@@ -100,12 +103,14 @@ export default function Home({ setView }) {
 
 function Stat({ icon, n, label, tone }) {
   return (
-    <div className="rounded-lg border border-edge bg-panel p-3.5 shadow-card">
+    <div className="surface lift rounded-xl p-3.5">
       <div className="flex items-center justify-between">
-        <div className="text-3xl font-semibold text-slate-100 tabular-nums">{n}</div>
-        <Icon name={icon} size={18} className={tone} />
+        <div className="text-[2rem] leading-none font-semibold text-slate-50 tabular-nums tracking-tight">{n}</div>
+        <span className={`grid place-items-center h-8 w-8 rounded-lg bg-white/[0.04] border border-white/10 shadow-inner-hi ${tone}`}>
+          <Icon name={icon} size={17} />
+        </span>
       </div>
-      <div className="text-[11px] text-slate-500 mt-1">{label}</div>
+      <div className="text-[11px] text-slate-500 mt-2">{label}</div>
     </div>
   );
 }
