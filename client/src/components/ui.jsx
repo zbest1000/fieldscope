@@ -252,7 +252,7 @@ export function HexView({ raw }) {
           {hex ? (
             <HexDump hex={hex} />
           ) : (
-            <pre className="hex bg-ink border border-edge rounded-md p-3 text-slate-300 whitespace-pre-wrap">{text}</pre>
+            <pre className="hex bg-ink border border-edge rounded-lg p-3 text-slate-300 whitespace-pre-wrap shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">{text}</pre>
           )}
         </div>
       ))}
@@ -265,7 +265,7 @@ function HexDump({ hex }) {
   const rows = [];
   for (let i = 0; i < bytes.length; i += 16) rows.push(bytes.slice(i, i + 16));
   return (
-    <div className="hex bg-ink border border-edge rounded-md p-3 overflow-x-auto">
+    <div className="hex bg-ink border border-edge rounded-lg p-3 overflow-x-auto shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">
       {rows.map((row, r) => {
         const ascii = row
           .map((b) => {
@@ -295,7 +295,7 @@ export function Json({ data }) {
   return (
     <div className="relative group">
       <CopyButton text={text} className="absolute right-2 top-2 opacity-0 group-hover:opacity-100" />
-      <pre className="hex bg-ink border border-edge rounded-md p-3 text-slate-300 overflow-x-auto whitespace-pre-wrap">{text}</pre>
+      <pre className="hex bg-ink border border-edge rounded-lg p-3 text-slate-300 overflow-x-auto whitespace-pre-wrap shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">{text}</pre>
     </div>
   );
 }

@@ -206,7 +206,7 @@ function PhysicalTopology({ topo, extra }) {
         <Icon name="layers" size={13} className="text-slate-500" /> Physical topology · LLDP
         <span className="ml-auto normal-case text-slate-600">{nodes.length} devices · {links.length} cables</span>
       </div>
-      <div className="rounded-lg border border-edge bg-ink overflow-x-auto">
+      <div className="rounded-xl border border-edge bg-ink/80 overflow-x-auto shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: Math.min(W, 900), height: H }}>
           {/* cables between specific ports */}
           {links.map((l, i) => {
@@ -289,7 +289,7 @@ function LogicalTopology({ topo, extra }) {
         <Icon name="layers" size={13} className="text-slate-500" /> Logical topology · DCP
         <span className="ml-auto normal-case text-slate-600">{nodes.filter((n) => n.kind !== 'segment').length} devices</span>
       </div>
-      <div className="rounded-lg border border-edge bg-ink overflow-x-auto">
+      <div className="rounded-xl border border-edge bg-ink/80 overflow-x-auto shadow-[inset_0_1px_3px_rgba(0,0,0,0.4)]">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ minWidth: 640, height: H }}>
           {edges.map((e, i) => {
             const a = pos[e.from];
@@ -534,30 +534,38 @@ export function WritePanel({ driver }) {
         <GateStep n={2} label="Confirm write" done={!!result} icon="ok" active={armed} />
       </div>
 
-      <div className="rounded-lg border border-hazard/30 bg-hazard/[0.05] px-4 py-3 mb-4 text-[13px] text-amber-200/90 leading-relaxed">
-        Writes clear two gates: <b>ARM</b> the session (top bar, Gate 1), then <b>confirm</b> each write showing
-        current → proposed (Gate 2). Every write is audited — non-disableable.
+      <div className="flex items-start gap-3 rounded-xl border border-hazard/30 bg-gradient-to-br from-hazard/[0.1] to-transparent shadow-[0_8px_28px_-14px_rgba(245,158,11,0.4)] px-4 py-3 mb-4 text-[13px] text-amber-200/90 leading-relaxed">
+        <span className="grid place-items-center h-8 w-8 rounded-lg bg-hazard/15 border border-hazard/30 text-hazard shadow-inner-hi mt-0.5 shrink-0">
+          <Icon name="bolt" size={17} strokeWidth={2} />
+        </span>
+        <span>Writes clear two gates: <b>ARM</b> the session (top bar, Gate 1), then <b>confirm</b> each write showing
+        current → proposed (Gate 2). Every write is audited — non-disableable.</span>
       </div>
 
       <ParamForm spec={driver.params?.write} value={params} onChange={setParams} />
       <Btn onClick={prepare} disabled={!session} icon="file">Dry-run / preview</Btn>
 
       {prep && (
-        <div className="mt-4 rounded-lg border border-edge bg-panel p-4">
-          <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-1.5">
+        <div className="mt-4 surface rounded-xl border-hazard/25 p-4 shadow-[0_10px_32px_-16px_rgba(245,158,11,0.35)]">
+          <div className="text-[10px] uppercase tracking-wider text-hazard/80 mb-3 flex items-center gap-1.5">
             <Icon name="shield" size={13} /> Confirm write · Gate 2
           </div>
           <KV
             pairs={[
               ['Target', prep.target],
               ['Point', prep.point],
-              ['Current value', String(prep.current_value ?? '—')],
             ]}
           />
-          <div className="flex items-center gap-2 my-3 text-sm">
-            <span className="font-mono text-slate-400">{String(prep.current_value ?? '—')}</span>
-            <Icon name="arrowRight" size={16} className="text-hazard" />
-            <span className="font-mono font-semibold text-hazard">{String(prep.proposed_value)}</span>
+          <div className="flex items-center gap-3 my-3">
+            <div className="flex-1 rounded-lg border border-edge bg-ink/60 px-3 py-2 text-center">
+              <div className="text-[9px] uppercase tracking-wider text-slate-600">current</div>
+              <div className="font-mono text-slate-300">{String(prep.current_value ?? '—')}</div>
+            </div>
+            <Icon name="arrowRight" size={18} className="text-hazard shrink-0" />
+            <div className="flex-1 rounded-lg border border-hazard/40 bg-hazard/[0.08] px-3 py-2 text-center shadow-inner-hi">
+              <div className="text-[9px] uppercase tracking-wider text-hazard/70">proposed</div>
+              <div className="font-mono font-semibold text-hazard">{String(prep.proposed_value)}</div>
+            </div>
           </div>
           {!armed && (
             <div className="flex items-center gap-2 text-xs text-rose-400 mb-3">
@@ -604,8 +612,10 @@ export function RawPanel() {
   const latest = artifacts[0];
   return (
     <div className="max-w-4xl animate-fade-in">
-      <div className="flex items-start gap-3 mb-4 rounded-lg border border-edge bg-white/[0.02] px-4 py-3">
-        <Icon name="copy" size={16} className="text-slate-500 mt-0.5" />
+      <div className="flex items-start gap-3 mb-4 surface rounded-xl px-4 py-3">
+        <span className="grid place-items-center h-8 w-8 rounded-lg bg-white/[0.05] border border-white/10 text-slate-400 shadow-inner-hi mt-0.5 shrink-0">
+          <Icon name="copy" size={16} />
+        </span>
         <p className="text-[13px] text-slate-400 leading-relaxed">
           The actual bytes on the wire for the most recent action — so you can verify the tool isn't lying. Pulled from
           the evidence store.
