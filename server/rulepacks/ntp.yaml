@@ -1,0 +1,74 @@
+# NTP / SNTP rulepack (§5, §6.1). Keyed off a single SNTP exchange: is the
+# server reachable, is it actually synchronized to a good source, and is the
+# local clock in agreement with it.
+
+rulepack: ntp
+rules:
+  - id: unreachable
+    when:
+      transport.udp_response: fail
+    verdict:
+      severity: error
+      title: "No answer from the time server"
+      detail: >
+        The SNTP query got no UDP response. The server is down, not running NTP
+        on this port (123/udp), or a firewall blocks it. Devices pointed at it
+        will free-run on their own oscillators and drift apart.
+      next_steps:
+        - "Confirm NTP is listening on 123/udp at this address"
+        - "Check firewall / ACL for udp/123"
+
+  - id: unsynchronized
+    when:
+      transport.udp_response: success
+      ntp.synchronized: false
+    verdict:
+      severity: error
+      title: "Time server is not synchronized"
+      detail: >
+        The server answered but reports it is not disciplined to a valid
+        reference (stratum 0/16 or the leap indicator is set to alarm). Its time
+        is not trustworthy — clients that accept it will be wrong together.
+      next_steps:
+        - "Check the server's upstream sources / GPS-PPS lock"
+        - "Do not point devices at a server in the alarm (unsynchronized) state"
+
+  - id: large-offset
+    when:
+      transport.udp_response: success
+      ntp.synchronized: true
+      ntp.abs_offset_ms: { gt: 1000 }
+    verdict:
+      severity: warn
+      title: "Local clock is more than 1s off this server"
+      detail: >
+        The server is synchronized, but the measured offset between it and this
+        host exceeds one second. Event timestamps captured here will not line up
+        with device/SCADA time — a sequence-of-events analysis across this
+        boundary will be misleading.
+      next_steps:
+        - "Discipline this host's clock to the same source before correlating events"
+
+  - id: high-dispersion
+    when:
+      transport.udp_response: success
+      ntp.synchronized: true
+      ntp.root_dispersion_ms: { gt: 1000 }
+    verdict:
+      severity: warn
+      title: "Time server reports high root dispersion"
+      detail: >
+        The server is synchronized but advertises a large root dispersion — its
+        own estimate of maximum error is high. Its time is usable but not tight;
+        expect loose agreement across devices that use it.
+
+  - id: healthy
+    when:
+      transport.udp_response: success
+      ntp.synchronized: true
+    verdict:
+      severity: ok
+      title: "Time server healthy and synchronized"
+      detail: >
+        The server is disciplined to a valid reference and the local clock
+        agrees with it within a second. Good time source for the segment.

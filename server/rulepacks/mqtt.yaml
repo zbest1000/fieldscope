@@ -1,0 +1,94 @@
+# MQTT rulepack (§5, §6.4). The CONNACK return code is the whole story for
+# broker connectivity: it cleanly separates network, broker, credential, and
+# protocol failures — each with a different fix.
+
+rulepack: mqtt
+rules:
+  - id: broker-unreachable
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "Broker port closed or unreachable"
+      detail: >
+        TCP to the broker port failed outright. The broker process is down, the
+        port is wrong (1883 plain / 8883 TLS), or a firewall drops it.
+      next_steps:
+        - "Ping the host to separate network reachability from broker state"
+        - "If the broker only listens on TLS, probe 8883 with the TLS inspector"
+
+  - id: no-connack
+    when:
+      transport.tcp_connect: success
+      timeout: true
+    verdict:
+      severity: warn
+      title: "Port open but no CONNACK"
+      detail: >
+        The TCP handshake completes but the broker never answers the MQTT
+        CONNECT. Usually the port is not actually MQTT (or it is the TLS
+        listener answering a plaintext client); occasionally a broker that is
+        up but wedged.
+      next_steps:
+        - "Try the TLS inspector on this port — a TLS listener explains the silence"
+        - "Check the broker's own log for the inbound connection"
+
+  - id: not-authorized
+    when:
+      transport.tcp_connect: success
+      connack.code: 5
+    verdict:
+      severity: error
+      title: "Broker refused: not authorized"
+      detail: >
+        CONNACK return code 5. The broker is healthy and answering, but this
+        client identity is not allowed — an ACL, listener restriction, or
+        anonymous-access-disabled setting is rejecting the connection.
+      next_steps:
+        - "Supply username/password in the connect parameters"
+        - "Check the broker ACL for the client ID / username used"
+
+  - id: bad-credentials
+    when:
+      transport.tcp_connect: success
+      connack.code: 4
+    verdict:
+      severity: error
+      title: "Broker refused: bad user name or password"
+      detail: >
+        CONNACK return code 4 — the credentials were presented and rejected.
+        This is a credential problem, not a network problem.
+
+  - id: protocol-version
+    when:
+      transport.tcp_connect: success
+      connack.code: 1
+    verdict:
+      severity: warn
+      title: "Broker refused: unacceptable protocol version"
+      detail: >
+        CONNACK return code 1. The broker did not accept MQTT 3.1.1 — likely an
+        MQTT 5-only or 3.1-only configuration.
+
+  - id: server-unavailable
+    when:
+      transport.tcp_connect: success
+      connack.code: 3
+    verdict:
+      severity: warn
+      title: "Broker answering but reports itself unavailable"
+      detail: >
+        CONNACK return code 3 — the MQTT listener is up but the broker refuses
+        service, typically during startup, overload, or a backend outage on a
+        bridged broker.
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      connack.code: 0
+    verdict:
+      severity: ok
+      title: "Broker accepting connections"
+      detail: >
+        CONNECT → CONNACK rc=0. The broker is reachable and accepts this
+        client; browse the topic tree to confirm data is actually flowing.

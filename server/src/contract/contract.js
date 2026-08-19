@@ -114,3 +114,28 @@ export function rawView(raw) {
 export function severityRank(sev) {
   return Math.max(0, SEVERITIES.indexOf(sev));
 }
+
+// Validate provided params against a verb's declared param spec (§4): number
+// range and enum membership are enforced before a verb ever touches the wire, so
+// a malformed address or an invalid mode is rejected with a clear message rather
+// than producing a bogus frame. Params not declared in the spec pass through
+// untouched (e.g. timeout), and missing params fall through to driver defaults.
+export function validateParams(spec, params = {}) {
+  if (!spec || !params) return params || {};
+  const out = { ...params };
+  for (const [key, val] of Object.entries(params)) {
+    if (val === undefined || val === null) continue;
+    const def = spec[key];
+    if (!def) continue; // not declared for this verb → leave as-is
+    if (def.type === 'number') {
+      const n = typeof val === 'number' ? val : Number(val);
+      if (!Number.isFinite(n)) throw new Error(`param "${key}" must be a number (got ${JSON.stringify(val)})`);
+      if (def.min != null && n < def.min) throw new Error(`param "${key}" must be ≥ ${def.min} (got ${n})`);
+      if (def.max != null && n > def.max) throw new Error(`param "${key}" must be ≤ ${def.max} (got ${n})`);
+      out[key] = n;
+    } else if (def.type === 'enum') {
+      if (!def.options.includes(val)) throw new Error(`param "${key}" must be one of: ${def.options.join(', ')} (got ${JSON.stringify(val)})`);
+    }
+  }
+  return out;
+}

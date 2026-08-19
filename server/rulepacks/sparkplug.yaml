@@ -1,0 +1,85 @@
+# Sparkplug B rulepack (§5, §6.4). Sparkplug's whole value is a disciplined
+# lifecycle over MQTT; the failures that matter are broken sequence continuity
+# (lost data) and nodes that die or never birth (stale/unresolved metrics).
+
+rulepack: sparkplug
+rules:
+  - id: broker-unreachable
+    when:
+      transport.mqtt_connect: fail
+    verdict:
+      severity: error
+      title: "Cannot reach the MQTT broker"
+      detail: >
+        The Sparkplug host connects over MQTT, and the broker connection failed.
+        Fix the broker reachability first (see the MQTT driver's verdicts), then
+        re-observe the Sparkplug namespace.
+
+  - id: sequence-gap
+    when:
+      transport.mqtt_connect: success
+      sparkplug.total_gaps: { gt: 0 }
+    verdict:
+      severity: warn
+      title: "Sequence gaps detected — messages are being lost"
+      detail: >
+        One or more nodes skipped a sequence number. In Sparkplug the seq counter
+        increments by one on every message, so a gap means the broker or network
+        dropped data between the edge node and here. On a UNS this is silent data
+        loss — dashboards and historians will show stale or missing values with no
+        error surfaced anywhere else.
+      next_steps:
+        - "Check the edge node → broker link for drops (Wi-Fi, cellular, congested uplink)"
+        - "Confirm the broker isn't shedding QoS 0 messages under load; consider QoS 1"
+        - "If gaps cluster at one node, investigate that node's connection specifically"
+
+  - id: node-death
+    when:
+      transport.mqtt_connect: success
+      sparkplug.deaths: { gt: 0 }
+    verdict:
+      severity: warn
+      title: "Node/device DEATH observed — an edge node dropped"
+      detail: >
+        An NDEATH/DDEATH was seen (delivered via the MQTT Last-Will when a node
+        loses its broker connection). Metrics from that node are now stale. If it
+        did not re-birth, the edge is still offline.
+      next_steps:
+        - "Check power and network at the named edge node"
+        - "Confirm the node re-birthed (NBIRTH) after reconnecting; if not, it is still down"
+
+  - id: joined-mid-stream
+    when:
+      transport.mqtt_connect: success
+      sparkplug.joined_mid_stream: { gt: 0 }
+    verdict:
+      severity: info
+      title: "Data seen without a birth — trigger a rebirth to resolve aliases"
+      detail: >
+        DATA arrived from a node whose NBIRTH was not observed in this window.
+        Sparkplug DATA uses numeric aliases defined in the BIRTH, so without it the
+        metric names cannot be resolved. This is normal when you start listening
+        mid-stream — issue a Node Control/Rebirth command to have the node
+        re-publish its BIRTH.
+
+  - id: healthy
+    when:
+      transport.mqtt_connect: success
+      sparkplug.nodes_seen: { gt: 0 }
+    verdict:
+      severity: ok
+      title: "Sparkplug namespace healthy"
+      detail: >
+        Nodes are birthing and streaming with contiguous sequence numbers and no
+        deaths in the observed window.
+
+  - id: no-traffic
+    when:
+      transport.mqtt_connect: success
+    verdict:
+      severity: warn
+      title: "Broker reachable but no Sparkplug traffic"
+      detail: >
+        Connected to the broker but saw nothing on spBv1.0/# in the window. Either
+        no Sparkplug nodes are publishing, they use a different namespace/version,
+        or a broker ACL blocks the spBv1.0 topic tree for this client.

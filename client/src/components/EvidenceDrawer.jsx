@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../store.js';
-import { SEV_STYLE } from './ui.jsx';
+import { SEV_STYLE, Icon, SeverityChip } from './ui.jsx';
 
 // Persistent evidence drawer (§7). Every verb call is an artifact; they stream in
 // here against the session timeline, most-recent first.
@@ -9,20 +9,23 @@ export default function EvidenceDrawer() {
   const [open, setOpen] = useState(true);
 
   return (
-    <div className="border-t border-edge bg-panel2 shrink-0">
+    <div className="border-t border-edge glass shadow-[0_-8px_24px_-16px_rgba(0,0,0,0.8)] shrink-0">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center gap-2 px-4 py-1.5 text-xs text-slate-400 hover:text-slate-200"
+        className="w-full flex items-center gap-2 px-4 py-2 text-xs text-slate-400 hover:text-slate-200"
       >
-        <span className="uppercase tracking-wider">Evidence</span>
-        <span className="text-slate-500">{artifacts.length} artifacts</span>
-        {session && <span className="text-slate-600 font-mono ml-2">{session.id}</span>}
-        <span className="ml-auto">{open ? '▾' : '▸'}</span>
+        <Icon name="file" size={13} className="text-slate-500" />
+        <span className="uppercase tracking-wider font-semibold">Evidence</span>
+        <span className="rounded bg-white/5 px-1.5 py-0.5 text-slate-400">{artifacts.length}</span>
+        {session && <span className="text-slate-600 font-mono ml-1">{session.id}</span>}
+        <Icon name="chevron" size={14} className={`ml-auto transition-transform ${open ? '' : '-rotate-90'}`} />
       </button>
       {open && (
-        <div className="max-h-44 overflow-y-auto">
+        <div className="max-h-48 overflow-y-auto border-t border-edge/60">
           {artifacts.length === 0 ? (
-            <div className="px-4 py-3 text-slate-600 text-sm">No artifacts yet.</div>
+            <div className="px-4 py-4 text-slate-600 text-sm flex items-center gap-2">
+              <Icon name="clock" size={14} /> No artifacts yet — run a verb to capture evidence.
+            </div>
           ) : (
             <table className="w-full text-xs">
               <tbody>
@@ -30,13 +33,13 @@ export default function EvidenceDrawer() {
                   const top = a.verdicts?.[0];
                   const sev = top ? SEV_STYLE[top.severity] : null;
                   return (
-                    <tr key={a.id} className="border-b border-edge/40 hover:bg-panel">
-                      <td className="px-4 py-1 font-mono text-slate-500 w-8">#{a.seq}</td>
-                      <td className="px-2 py-1 text-slate-300 capitalize w-24">{a.verb}</td>
-                      <td className="px-2 py-1">
+                    <tr key={a.id} className="border-b border-edge/40 hover:bg-white/[0.02]">
+                      <td className="px-4 py-1.5 font-mono text-slate-600 w-10">#{a.seq}</td>
+                      <td className="px-2 py-1.5 text-slate-300 capitalize w-24 font-medium">{a.verb}</td>
+                      <td className="px-2 py-1.5">
                         {top ? (
                           <span className={`inline-flex items-center gap-1.5 ${sev.text}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${sev.dot}`} />
+                            <Icon name={sev.icon} size={12} strokeWidth={2.25} />
                             {top.title}
                           </span>
                         ) : a.error ? (
@@ -45,7 +48,9 @@ export default function EvidenceDrawer() {
                           <span className="text-slate-500">{summ(a.result)}</span>
                         )}
                       </td>
-                      <td className="px-2 py-1 text-slate-600 font-mono w-16 text-right">{a.has_raw ? 'raw' : ''}</td>
+                      <td className="px-3 py-1.5 text-right w-16">
+                        {a.has_raw && <span className="text-[10px] text-emerald-500/70 font-mono">raw</span>}
+                      </td>
                     </tr>
                   );
                 })}

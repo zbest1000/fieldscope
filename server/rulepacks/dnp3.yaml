@@ -1,0 +1,112 @@
+# DNP3 rulepack (§5, §6.3). The IIN (Internal Indications) word is the
+# outstation's own status report; each flag maps to a specific field action.
+
+rulepack: dnp3
+rules:
+  - id: port-closed
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "No DNP3 endpoint at this address"
+      detail: >
+        TCP 20000 refused or unreachable. The outstation is offline, the address
+        or port is wrong, or a firewall drops it.
+      next_steps:
+        - "Confirm the outstation IP and that TCP 20000 is open"
+        - "DNP3-over-TLS or a non-default port would also present this way"
+
+  - id: no-application
+    when:
+      transport.tcp_connect: success
+      application.received: false
+      timeout: true
+    verdict:
+      severity: warn
+      title: "TCP open but no DNP3 response"
+      detail: >
+        The socket connects but the outstation never answers the integrity
+        read. Most often the DNP3 link address is wrong — the outstation only
+        replies to frames carrying its configured link address and expecting its
+        master's address — or a data-link/TLS mismatch is dropping the frame.
+      next_steps:
+        - "Verify the outstation (destination) and master (source) DNP3 link addresses"
+        - "Confirm the master address is in the outstation's allowed-master list"
+
+  - id: config-corrupt
+    when:
+      transport.tcp_connect: success
+      iin.config_corrupt: true
+    verdict:
+      severity: error
+      title: "Outstation reports CONFIGURATION CORRUPT"
+      detail: >
+        IIN2.5 is set — the outstation considers its configuration corrupt. It
+        will not behave predictably until the configuration is reloaded.
+      next_steps:
+        - "Reload the outstation configuration from the engineering tool"
+        - "Check for a failed or interrupted config download"
+
+  - id: event-overflow
+    when:
+      transport.tcp_connect: success
+      iin.event_buffer_overflow: true
+    verdict:
+      severity: warn
+      title: "Event buffer overflow — the master is not keeping up"
+      detail: >
+        IIN2.3 is set: the outstation's event buffer filled and events were
+        lost. Either the master is polling too slowly, unsolicited responses are
+        not getting through, or the event buffer is undersized for the point count.
+      next_steps:
+        - "Check master↔outstation connectivity and the integrity-poll interval"
+        - "Confirm unsolicited responses are enabled and reaching the master"
+
+  - id: device-restart
+    when:
+      transport.tcp_connect: success
+      iin.device_restart: true
+    verdict:
+      severity: warn
+      title: "Outstation restarted — restart IIN not yet cleared"
+      detail: >
+        IIN1.7 (device restart) is set. The outstation has restarted since the
+        master last cleared this bit. It is normal right after a power cycle, but
+        it should be cleared by the master writing IIN1.7 = 0; a bit that never
+        clears means the master is not completing its restart handshake.
+      next_steps:
+        - "Have the master issue a WRITE of IIN1.7 = 0 (clear restart) then re-integrate"
+        - "If it reappears repeatedly, the outstation is rebooting — check power and watchdog"
+
+  - id: need-time
+    when:
+      transport.tcp_connect: success
+      iin.need_time: true
+    verdict:
+      severity: info
+      title: "Outstation requests time synchronization"
+      detail: >
+        IIN1.4 is set — the outstation wants the master to write its clock.
+        Event timestamps will be inaccurate until a time sync completes.
+
+  - id: local-control
+    when:
+      transport.tcp_connect: success
+      iin.local_control: true
+    verdict:
+      severity: warn
+      title: "One or more points are in Local control"
+      detail: >
+        IIN1.5 is set: at least one output point is switched to local/manual and
+        will ignore commands from the master until returned to remote.
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      application.received: true
+    verdict:
+      severity: ok
+      title: "DNP3 outstation responding, IIN clean"
+      detail: >
+        The outstation answered the Class 0 integrity read and no fault or
+        attention IIN bits are set.

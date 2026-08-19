@@ -14,9 +14,58 @@ body,
 }
 
 body {
-  background: #0b0f14;
+  /* Deep instrument background: layered accent glows + a faint engineering grid
+     so large empty areas read as a lit workspace rather than a flat fill. */
+  background:
+    radial-gradient(900px 420px at 50% -8%, rgba(16, 185, 129, 0.07), transparent 62%),
+    radial-gradient(700px 500px at 100% 0%, rgba(56, 189, 248, 0.05), transparent 55%),
+    linear-gradient(rgba(148, 163, 184, 0.022) 1px, transparent 1px) 0 0 / 100% 44px,
+    linear-gradient(90deg, rgba(148, 163, 184, 0.022) 1px, transparent 1px) 0 0 / 44px 100%,
+    #080b10;
   color: #cbd5e1;
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Heading polish: tighter optical tracking at larger sizes. */
+h1 { letter-spacing: -0.02em; }
+h2 { letter-spacing: -0.01em; }
+
+/* ---- Elevation helpers ------------------------------------------------------
+   `.surface` is a lit panel (top highlight + soft cast). Compose with hover
+   lift via `.lift`. Kept as small utilities so components stay declarative. */
+@layer components {
+  .surface {
+    background-color: #121a24;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 42%);
+    border: 1px solid #1f2b38;
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 2px 10px -2px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
+  }
+  .lift {
+    transition:
+      transform 0.14s ease,
+      box-shadow 0.14s ease,
+      border-color 0.14s ease,
+      background-color 0.14s ease;
+  }
+  .lift:hover {
+    transform: translateY(-1px);
+    box-shadow:
+      0 6px 18px -6px rgba(0, 0, 0, 0.55),
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.07);
+  }
+  /* Frosted floating chrome (top bar, palette, popovers). */
+  .glass {
+    background-color: rgba(13, 20, 28, 0.72);
+    backdrop-filter: blur(12px) saturate(1.2);
+    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  }
 }
 
 /* The armed hazard state re-colors the whole chrome (§4.1). */
@@ -27,15 +76,58 @@ body {
 .hex {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
   word-break: break-all;
 }
 
+/* Focus rings — consistent, keyboard-friendly. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(16, 185, 129, 0.6);
+  outline-offset: 1px;
+}
+input,
+select,
+button {
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease,
+    color 0.12s ease,
+    box-shadow 0.12s ease,
+    opacity 0.12s ease;
+}
+
+/* Thin, unobtrusive scrollbars. */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e2a37;
-  border-radius: 5px;
+  background: #243444;
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #33475b;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Loading shimmer strip. */
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.08), transparent);
+  animation: shimmer 1.4s infinite;
 }

@@ -1,0 +1,13 @@
+.git
+node_modules
+**/node_modules
+client/dist
+server/data
+**/*.db
+**/*.db-*
+.env
+Dockerfile
+docker-compose.yml
+.github
+docs
+*.md

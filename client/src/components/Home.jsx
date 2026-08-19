@@ -1,72 +1,116 @@
 import React from 'react';
 import { useStore } from '../store.js';
+import { Icon, Badge } from './ui.jsx';
 
-// HOME (§7): overview of protocols ready + the loaded rulepacks. Doubles as the
+// HOME (§7): overview of protocols ready + loaded rulepacks. Doubles as the
 // protocol catalog — every driver, its domain, library maturity, and focus.
-const DOMAIN_LABEL = {
-  it: 'IT / network',
-  industrial: 'Industrial Ethernet',
-  utility: 'Utility / building / energy',
-  iiot: 'IIoT / broker / data',
-  'iot-rf': 'IoT / wireless',
-};
+const DOMAINS = [
+  { key: 'it', label: 'IT / Network', accent: 'text-d-it', ring: 'bg-d-it' },
+  { key: 'industrial', label: 'Industrial Ethernet', accent: 'text-d-industrial', ring: 'bg-d-industrial' },
+  { key: 'utility', label: 'Utility / Building / Energy', accent: 'text-d-utility', ring: 'bg-d-utility' },
+  { key: 'iiot', label: 'IIoT / Broker / Data', accent: 'text-d-iiot', ring: 'bg-d-iiot' },
+  { key: 'iot-rf', label: 'IoT / Wireless', accent: 'text-d-rf', ring: 'bg-d-rf' },
+];
 
 export default function Home({ setView }) {
   const { drivers, rulepacks, selectDriver } = useStore();
   const byDomain = {};
   for (const d of drivers) (byDomain[d.domain] ||= []).push(d);
+  const totalRules = rulepacks.reduce((a, p) => a + p.rules, 0);
 
   return (
-    <div className="flex-1 overflow-y-auto p-6">
-      <h1 className="text-lg font-semibold text-slate-100 mb-1">Fieldscope</h1>
-      <p className="text-sm text-slate-400 max-w-2xl mb-6">
-        A read-only, evidence-first diagnostics workbench. Every probe, poll, and browse is captured
-        as an artifact with raw bytes, a decode, and a verdict — then replayed, diffed, and exported.
-        This build ships the IT tier plus Modbus TCP; the driver contract is the same for every
-        protocol added next.
-      </p>
+    <div className="flex-1 overflow-y-auto">
+      {/* Hero */}
+      <div className="relative px-8 pt-9 pb-7 border-b border-edge overflow-hidden">
+        <div className="pointer-events-none absolute -top-24 left-1/3 h-56 w-[36rem] rounded-full bg-emerald-500/[0.07] blur-3xl" />
+        <div className="pointer-events-none absolute -top-16 right-10 h-40 w-80 rounded-full bg-sky-500/[0.05] blur-3xl" />
+        <h1 className="relative text-[1.75rem] font-semibold text-slate-50 tracking-tight">Fieldscope</h1>
+        <p className="text-sm text-slate-400 max-w-2xl mt-2 leading-relaxed">
+          A read-only, evidence-first diagnostics workbench. Every probe, poll, and browse is captured as an artifact
+          with raw bytes, a decode, and a plain-English verdict — then replayed, diffed, and exported. One workbench
+          spanning IT, industrial, utility, and IIoT behind a single driver contract; writes are double-gated and every
+          action is audited.
+        </p>
 
-      <div className="grid grid-cols-3 gap-3 mb-8 max-w-2xl">
-        <Stat n={drivers.length} label="protocols ready" />
-        <Stat n={rulepacks.reduce((a, p) => a + p.rules, 0)} label="diagnostic rules" />
-        <Stat n={drivers.filter((d) => d.write_capable).length} label="write-capable (gated)" />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 max-w-3xl">
+          <Stat icon="layers" n={drivers.length} label="protocols ready" tone="text-emerald-400" />
+          <Stat icon="shield" n={totalRules} label="diagnostic rules" tone="text-sky-400" />
+          <Stat icon="bolt" n={drivers.filter((d) => d.write_capable).length} label="write-capable · gated" tone="text-hazard" />
+          <Stat icon="activity" n={DOMAINS.filter((d) => byDomain[d.key]?.length).length} label="protocol tiers" tone="text-violet-400" />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 mt-5 text-[11px] text-slate-500">
+          <span className="uppercase tracking-wider">Legend</span>
+          <span className="flex items-center gap-1.5">🟢 mature library</span>
+          <span className="flex items-center gap-1.5">🟡 partial</span>
+          <span className="flex items-center gap-1.5">🔴 decode-only</span>
+          <span className="flex items-center gap-1.5"><Icon name="bolt" size={12} className="text-hazard" /> write-capable (ARM-gated)</span>
+        </div>
       </div>
 
-      {Object.entries(byDomain).map(([domain, ds]) => (
-        <div key={domain} className="mb-6">
-          <div className="text-xs uppercase tracking-wider text-slate-500 mb-2">{DOMAIN_LABEL[domain] || domain}</div>
-          <div className="border border-edge rounded overflow-hidden">
-            <table className="w-full text-sm">
-              <tbody>
-                {ds.map((d) => (
-                  <tr
-                    key={d.id}
-                    onClick={() => { selectDriver(d.id); setView('workspace'); }}
-                    className="border-b border-edge/50 hover:bg-panel cursor-pointer"
-                  >
-                    <td className="px-3 py-2 text-slate-200 w-48">{d.display_name}</td>
-                    <td className="px-3 py-2 w-10">{d.lib}</td>
-                    <td className="px-3 py-2 text-slate-500 text-xs">{d.describe}</td>
-                    <td className="px-3 py-2 text-right w-40">
-                      <span className="text-[10px] text-slate-500">{d.verbs.join(' · ')}</span>
-                    </td>
-                    <td className="px-3 py-2 w-8 text-hazard/70">{d.write_capable ? '✎' : ''}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
+      {/* Catalog */}
+      <div className="p-8 space-y-8">
+        {DOMAINS.filter((dom) => byDomain[dom.key]?.length).map((dom) => (
+          <section key={dom.key}>
+            <div className="flex items-center gap-2 mb-3">
+              <span className={`h-2 w-2 rounded-full ${dom.ring}`} />
+              <h2 className={`text-xs font-semibold uppercase tracking-wider ${dom.accent}`}>{dom.label}</h2>
+              <span className="text-xs text-slate-600">{byDomain[dom.key].length}</span>
+            </div>
+            <div className="surface rounded-xl overflow-hidden divide-y divide-edge/60">
+              {byDomain[dom.key].map((d) => (
+                <button
+                  key={d.id}
+                  onClick={() => { selectDriver(d.id); setView('workspace'); }}
+                  className="group relative w-full text-left flex items-center gap-4 px-4 py-3 hover:bg-white/[0.035] transition-colors"
+                >
+                  <span className="absolute left-0 top-0 h-full w-0.5 bg-emerald-500/0 group-hover:bg-emerald-500/60 transition-colors" />
+                  <div className="w-52 shrink-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-100 font-medium">{d.display_name}</span>
+                      {d.write_capable && <Icon name="bolt" size={13} className="text-hazard/70" />}
+                    </div>
+                    <div className="text-[11px] text-slate-600 font-mono mt-0.5">{d.id}{d.default_port ? ` · :${d.default_port}` : ''}</div>
+                  </div>
+                  <span className="w-7 text-center shrink-0">{d.lib?.slice(0, 2)}</span>
+                  <div className="flex-1 min-w-0 text-xs text-slate-500 truncate">{d.describe}</div>
+                  <div className="hidden lg:flex flex-wrap gap-1 justify-end w-64 shrink-0">
+                    {d.verbs.filter((v) => v !== 'decode').map((v) => (
+                      <span
+                        key={v}
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          v === 'diagnose'
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : v === 'write'
+                              ? 'bg-hazard/10 text-hazard'
+                              : 'bg-white/5 text-slate-400'
+                        }`}
+                      >
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                  <Icon name="arrowRight" size={15} className="text-slate-600 group-hover:text-slate-300 shrink-0" />
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
     </div>
   );
 }
 
-function Stat({ n, label }) {
+function Stat({ icon, n, label, tone }) {
   return (
-    <div className="rounded border border-edge bg-panel2 p-3">
-      <div className="text-2xl font-semibold text-slate-100">{n}</div>
-      <div className="text-xs text-slate-500">{label}</div>
+    <div className="surface lift rounded-xl p-3.5">
+      <div className="flex items-center justify-between">
+        <div className="text-[2rem] leading-none font-semibold text-slate-50 tabular-nums tracking-tight">{n}</div>
+        <span className={`grid place-items-center h-8 w-8 rounded-lg bg-white/[0.04] border border-white/10 shadow-inner-hi ${tone}`}>
+          <Icon name={icon} size={17} />
+        </span>
+      </div>
+      <div className="text-[11px] text-slate-500 mt-2">{label}</div>
     </div>
   );
 }

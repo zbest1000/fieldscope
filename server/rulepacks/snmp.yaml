@@ -1,0 +1,72 @@
+# SNMP rulepack (§5, §6.1). Two signature verdicts: the community-string
+# ambiguity (an agent silently drops bad communities, so timeout ≠ "device off")
+# and the flaky-cable detector (an interface that is up but accumulating
+# error/discard counters).
+
+rulepack: snmp
+rules:
+  - id: no-response
+    when:
+      transport.snmp_response: none
+      timeout: true
+    verdict:
+      severity: error
+      title: "No SNMP response — agent off or community string wrong"
+      detail: >
+        The request timed out. SNMP agents silently DROP requests carrying a
+        wrong community string, so on the wire "agent disabled", "host down",
+        and "wrong community" all look identical. Separate them: if ping works
+        and the port probe shows 161/udp open, it is almost certainly the
+        community string.
+      next_steps:
+        - "Ping the host first — separate reachability from agent state"
+        - "Try the device's configured read community (often not 'public')"
+        - "Confirm SNMP is enabled and v1/v2c allowed (v3-only agents ignore v2c)"
+
+  - id: agent-error
+    when:
+      transport.snmp_response: none
+    verdict:
+      severity: error
+      title: "SNMP request failed"
+      detail: >
+        The agent could not be queried — see the raw transcript for the exact
+        error (network unreachable, port refused, or a malformed response).
+
+  - id: flaky-cable
+    when:
+      transport.snmp_response: success
+      interfaces.with_errors: { gt: 0 }
+    verdict:
+      severity: warn
+      title: "Interface(s) up but accumulating errors — check cabling"
+      detail: >
+        At least one interface reports oper-status up while its error/discard
+        counters climb. On a plant floor this is the classic signature of a
+        damaged patch cable, a duplex mismatch, or EMI on an unshielded run
+        near a drive. The worst offender is named in the facts.
+      next_steps:
+        - "Re-terminate or swap the patch cable on the named port"
+        - "Check speed/duplex agreement on both ends (no auto vs forced mix)"
+        - "Re-read after a few minutes — a static count is history, a climbing one is live"
+
+  - id: healthy
+    when:
+      transport.snmp_response: success
+      interfaces.with_errors: 0
+    verdict:
+      severity: ok
+      title: "Agent responding, interface counters clean"
+      detail: >
+        The system group reads normally and no up interface is accumulating
+        error or discard counters.
+
+  - id: responding
+    when:
+      transport.snmp_response: success
+    verdict:
+      severity: info
+      title: "Agent responding"
+      detail: >
+        The system group reads normally; the interface table was not readable
+        (some embedded agents restrict it) so counter health is unknown.

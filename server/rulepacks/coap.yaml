@@ -1,0 +1,49 @@
+# CoAP rulepack (§5, §6.4). Keyed off one CoAP GET: did the constrained endpoint
+# answer, and what response class did it return.
+
+rulepack: coap
+rules:
+  - id: unreachable
+    when:
+      transport.udp_response: fail
+    verdict:
+      severity: error
+      title: "No answer from the CoAP endpoint"
+      detail: >
+        The CoAP GET got no UDP response. The node is asleep/off, not serving
+        CoAP on this port (5683/udp, or 5684 for CoAPS/DTLS), or a firewall
+        blocks it.
+      next_steps:
+        - "Confirm CoAP is served on 5683/udp (DTLS uses 5684)"
+        - "For a sleepy node, retry — it may only wake periodically"
+
+  - id: server-error
+    when:
+      transport.udp_response: success
+      coap.class: 5
+    verdict:
+      severity: error
+      title: "CoAP endpoint returned a 5.xx server error"
+      detail: "The node answered but failed to service the request (5.xx). It is reachable but faulting."
+
+  - id: client-error
+    when:
+      transport.udp_response: success
+      coap.class: 4
+    verdict:
+      severity: warn
+      title: "CoAP endpoint returned a 4.xx error"
+      detail: >
+        The node answered with a 4.xx — commonly 4.04 Not Found (wrong path) or
+        4.01 Unauthorized. The endpoint is alive; the request was rejected.
+      next_steps:
+        - "Check the Uri-Path and whether the resource needs DTLS/authentication"
+
+  - id: healthy
+    when:
+      transport.udp_response: success
+      coap.ok: true
+    verdict:
+      severity: ok
+      title: "CoAP endpoint healthy (2.xx)"
+      detail: "The node answered with a success response. Browse /.well-known/core to enumerate its resources."

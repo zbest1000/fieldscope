@@ -1,0 +1,65 @@
+# S7comm rulepack (§5, §6.2). The two failure signatures that dominate Siemens
+# "can't go online" calls: the CPU is unreachable at TCP 102, or it is reachable
+# but refuses the COTP connection because the rack/slot (destination TSAP) is wrong.
+
+rulepack: s7comm
+rules:
+  - id: port-closed
+    when:
+      transport.tcp_connect: fail
+    verdict:
+      severity: error
+      title: "No ISO-on-TCP endpoint (TCP 102 closed)"
+      detail: >
+        TCP 102 refused or unreachable. The CPU/CP is offline or unplugged, the
+        IP is wrong, or a firewall blocks ISO-on-TCP. S7-1200/1500 also gate
+        access behind their "permit PUT/GET" and protection settings.
+      next_steps:
+        - "Ping the CPU to separate network reachability from the S7 service"
+        - "On S7-1200/1500, enable PUT/GET communication and check the protection level"
+
+  - id: cotp-refused
+    when:
+      transport.tcp_connect: success
+      cotp.confirmed: false
+    verdict:
+      severity: error
+      title: "TCP open but COTP connection refused — check rack/slot"
+      detail: >
+        Port 102 accepts the TCP connection but the CPU rejects the ISO/COTP
+        connection request. The overwhelmingly common cause is a wrong rack/slot:
+        the destination TSAP encodes them, and the CPU only accepts the pair that
+        matches its actual mounting. S7-300 is typically rack 0 / slot 2;
+        S7-400 varies with the rack layout; S7-1200/1500 are rack 0 / slot 1
+        (or 0). A wrong slot looks exactly like this.
+      next_steps:
+        - "Try rack 0 / slot 1 for S7-1200/1500, rack 0 / slot 2 for S7-300"
+        - "For S7-400, match the slot to the CPU's physical rack position"
+        - "Confirm PUT/GET / remote access is permitted in the CPU protection settings"
+
+  - id: no-setup
+    when:
+      transport.tcp_connect: success
+      cotp.confirmed: true
+      s7.setup: false
+    verdict:
+      severity: warn
+      title: "COTP up but S7 setup-communication failed"
+      detail: >
+        The ISO/COTP connection is confirmed but the S7 layer did not complete
+        setup-communication (PDU negotiation). The endpoint speaks ISO-on-TCP but
+        may not be an S7 CPU, or it restricts the S7 protocol at this connection
+        resource.
+
+  - id: healthy
+    when:
+      transport.tcp_connect: success
+      cotp.confirmed: true
+      s7.setup: true
+    verdict:
+      severity: ok
+      title: "S7 communication established"
+      detail: >
+        COTP connected at the given rack/slot and S7 setup-communication
+        negotiated a PDU size. Identify to read the module order number and
+        firmware from the SZL.

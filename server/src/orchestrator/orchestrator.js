@@ -11,6 +11,8 @@
 
 import crypto from 'node:crypto';
 
+import { validateParams } from '../contract/contract.js';
+
 const ARM_TIMEOUT_MS = 5 * 60 * 1000; // auto-expire ARM after inactivity (§4.1)
 const DEFAULT_RATE = { capacity: 20, refillPerSec: 10 };
 
@@ -115,6 +117,7 @@ export class Orchestrator {
     if (verb === 'write') {
       throw new Error('writes must go through prepareWrite() + confirmWrite() (double-gate)');
     }
+    params = validateParams(driver.manifest.params?.[verb], params);
     this.#spendToken(rt);
 
     const ctx = this.#ctx(rt, params);
@@ -131,6 +134,7 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.verbs.diagnose) throw new Error(`${rt.driverId} has no diagnose verb`);
+    params = validateParams(driver.manifest.params?.diagnose, params);
     this.#spendToken(rt);
     const ctx = this.#ctx(rt, params);
     const res = await driver.verbs.diagnose(ctx);
@@ -158,6 +162,27 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.manifest.write_capable) throw new Error(`${rt.driverId} is not write-capable`);
+    params = validateParams(driver.manifest.params?.write, params);
+
+    // A driver whose write isn't a single register/value (e.g. a PROFINET DCP
+    // Set that reconfigures a station name or IP/subnet/gateway, or a DHCP lease
+    // assignment) provides its own preview: it names the point and computes the
+    // current → proposed pair for Gate 2. Falls back to the read-based path below.
+    if (driver.verbs.previewWrite) {
+      const ctx = this.#ctx(rt, params);
+      const pv = await driver.verbs.previewWrite(ctx);
+      const token = crypto.randomBytes(8).toString('hex');
+      rt.pendingWrites.set(token, { params, currentValue: pv.current_value ?? null, created: nowMs() });
+      return {
+        token,
+        target: pv.target ?? (rt.port ? `${rt.host}:${rt.port}` : rt.host),
+        point: pv.point,
+        current_value: pv.current_value ?? null,
+        proposed_value: pv.proposed_value,
+        requires_arm: true,
+        armed: rt.armed,
+      };
+    }
 
     // Read current value first so the confirm shows current → proposed (§4.1).
     let currentValue = null;
@@ -174,12 +199,16 @@ export class Orchestrator {
 
     const token = crypto.randomBytes(8).toString('hex');
     rt.pendingWrites.set(token, { params, currentValue, created: nowMs() });
+    // Point/value naming is driver-shaped: a register write has area:address and
+    // a value; a broker publish has a topic and a payload.
+    const point =
+      params.point ?? params.topic ?? `${params.area ?? 'holding'}:${params.address ?? 0}`;
     return {
       token,
       target: rt.port ? `${rt.host}:${rt.port}` : rt.host,
-      point: `${params.area ?? 'holding'}:${params.address ?? 0}`,
+      point,
       current_value: currentValue,
-      proposed_value: params.value,
+      proposed_value: params.value ?? params.payload,
       requires_arm: true,
       armed: rt.armed,
     };
@@ -222,6 +251,7 @@ export class Orchestrator {
     const rt = this.getSession(sessionId);
     const driver = this.registry.get(rt.driverId);
     if (!driver.verbs.monitorSample) throw new Error(`${rt.driverId} has no monitor`);
+    params = validateParams(driver.manifest.params?.monitor, params);
     const cadence = Math.max(250, params.cadence ?? 1000);
     const monitorId = `mon_${crypto.randomBytes(4).toString('hex')}`;
     const stats = { count: 0, ok: 0, min: Infinity, max: -Infinity, sum: 0, samples: [] };
@@ -260,16 +290,51 @@ export class Orchestrator {
     };
 
     const timer = setInterval(tick, cadence);
-    this.monitors.set(monitorId, { timer, sessionId });
+    this.monitors.set(monitorId, { timer, sessionId, driverId: rt.driverId, stats });
     tick();
     return { monitorId, cadence };
   }
 
+  // Summarize a monitor run's samples into loss / jitter / latency facts and a
+  // plain-English verdict (the "flaky link" story), stored as an artifact so the
+  // run lands in the session timeline and evidence like any other verb.
+  #monitorSummary(m) {
+    const s = m.stats;
+    if (!s || s.count === 0) return null;
+    const values = s.samples.filter((x) => typeof x.value === 'number').map((x) => x.value);
+    const lossPct = Math.round(((s.count - s.ok) / s.count) * 100);
+    const jitter = stddev(values);
+    const result = {
+      samples: s.count,
+      ok: s.ok,
+      loss_pct: lossPct,
+      min_ms: isFinite(s.min) ? round3(s.min) : null,
+      max_ms: isFinite(s.max) ? round3(s.max) : null,
+      avg_ms: s.ok ? round3(s.sum / s.ok) : null,
+      jitter_ms: round3(jitter),
+    };
+    const facts = { monitor: { samples: s.count, loss_pct: lossPct, jitter_ms: jitter, avg_ms: result.avg_ms, up: s.ok > 0 } };
+    const verdicts = this.rules.evaluate('monitor', facts);
+    return { result, facts, verdicts };
+  }
+
   stopMonitor(monitorId) {
     const m = this.monitors.get(monitorId);
-    if (m) {
-      clearInterval(m.timer);
-      this.monitors.delete(monitorId);
+    if (!m) return { stopped: true };
+    clearInterval(m.timer);
+    this.monitors.delete(monitorId);
+    const summary = this.#monitorSummary(m);
+    if (summary) {
+      const artifact = {
+        verb: 'monitor',
+        raw: null,
+        decode: null,
+        result: summary.result,
+        verdicts: summary.verdicts,
+      };
+      const saved = this.store.saveArtifact(m.sessionId, m.driverId, artifact, null);
+      this.emit('artifact', { sessionId: m.sessionId, artifact: saved });
+      return { stopped: true, summary: summary.result, verdicts: summary.verdicts, artifactId: saved.id };
     }
     return { stopped: true };
   }
@@ -315,6 +380,10 @@ function stddev(xs) {
   if (xs.length < 2) return 0;
   const m = xs.reduce((a, b) => a + b, 0) / xs.length;
   return Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+}
+
+function round3(n) {
+  return n == null ? null : Math.round(n * 1000) / 1000;
 }
 
 function nowMs() {

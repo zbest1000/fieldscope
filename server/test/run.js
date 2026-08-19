@@ -13,6 +13,23 @@ import { EvidenceStore } from '../src/evidence/store.js';
 import { RulesEngine } from '../src/rules/engine.js';
 import { Orchestrator } from '../src/orchestrator/orchestrator.js';
 import { startModbusSim } from './modbus-sim.js';
+import { startEipSim } from './eip-sim.js';
+import { startMqttBroker } from './mqtt-broker.js';
+import { startSnmpAgent } from './snmp-agent.js';
+import { startBacnetSim } from './bacnet-sim.js';
+import { startDnp3Sim } from './dnp3-sim.js';
+import { startIec104Sim } from './iec104-sim.js';
+import { startDnsSim } from './dns-sim.js';
+import { startNtpSim } from './ntp-sim.js';
+import { startHttpSim } from './http-sim.js';
+import { startCoapSim } from './coap-sim.js';
+import { startS7Sim } from './s7-sim.js';
+import { startSparkplugNode } from './sparkplug-node.js';
+import { startOpcuaSim } from './opcua-sim.js';
+import { startDhcpSim } from './dhcp-sim.js';
+import { startProfinetDcpSim } from './profinet-dcp-sim.js';
+import * as profinetDcp from '../src/drivers/profinet-dcp.js';
+import net from 'node:net';
 
 let passed = 0;
 let failed = 0;
@@ -87,6 +104,14 @@ async function main() {
     const v = rules.evaluate('icmp', { reachable: true, loss_pct: 40 });
     assert.strictEqual(v[0].rule_id, 'high-loss');
   });
+  await test('nonempty operator distinguishes [] from populated arrays', () => {
+    const { rules } = makeStack();
+    // Empty arrays must NOT trigger duplicate-name; populated ones must.
+    const clean = rules.evaluate('profinet-dcp', { transport: { dcp: 'ok' }, dcp: { count: 2, duplicate_names: [], unconfigured: [] } });
+    assert.strictEqual(clean[0].rule_id, 'devices-found');
+    const dup = rules.evaluate('profinet-dcp', { transport: { dcp: 'ok' }, dcp: { count: 2, duplicate_names: ['x'], unconfigured: [] } });
+    assert.strictEqual(dup[0].rule_id, 'duplicate-name');
+  });
 
   // ---- evidence store ----
   console.log('evidence store');
@@ -136,6 +161,92 @@ async function main() {
     assert.match(art.raw.rx, /^[0-9a-f]+$/);
   });
 
+  await test('register data-type interpretation (int16 / uint32 / float32, word order)', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    assert.deepStrictEqual(interpretRegisters([0xffff, 0x7fff], 'int16'), [-1, 32767]);
+    assert.deepStrictEqual(interpretRegisters([0x0001, 0x0002], 'uint32', 'big'), [0x00010002]); // 65538
+    assert.deepStrictEqual(interpretRegisters([0x0001, 0x0002], 'uint32', 'little'), [0x00020001]); // 131073
+    assert.deepStrictEqual(interpretRegisters([0xffff, 0xffff], 'int32'), [-1]);
+    const f = interpretRegisters([0x4248, 0xf5c3], 'float32', 'big')[0]; // ≈ 50.24
+    assert.ok(Math.abs(f - 50.24) < 0.01, `expected ~50.24, got ${f}`);
+  });
+  await test('all four byte/word orders decode 0x12345678 (ABCD/CDAB/BADC/DCBA)', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    // 0x12345678: bytes A=12 B=34 C=56 D=78. reg0=A,B ; reg1=C,D in ABCD.
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'ABCD'), [0x12345678]);
+    assert.deepStrictEqual(interpretRegisters([0x5678, 0x1234], 'uint32', 'CDAB'), [0x12345678]); // word swap
+    assert.deepStrictEqual(interpretRegisters([0x3412, 0x7856], 'uint32', 'BADC'), [0x12345678]); // byte swap
+    assert.deepStrictEqual(interpretRegisters([0x7856, 0x3412], 'uint32', 'DCBA'), [0x12345678]); // both
+    // Legacy big/little alias to ABCD/CDAB.
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'big'), interpretRegisters([0x1234, 0x5678], 'uint32', 'ABCD'));
+    assert.deepStrictEqual(interpretRegisters([0x1234, 0x5678], 'uint32', 'little'), interpretRegisters([0x1234, 0x5678], 'uint32', 'CDAB'));
+  });
+  await test('string decode + linear scaling (engineering units)', async () => {
+    const { interpretRegisters, scaleValues } = await import('../src/drivers/modbus.js');
+    // "FS-100" packed big-endian across three registers.
+    assert.deepStrictEqual(interpretRegisters([0x4653, 0x2d31, 0x3030], 'string', 'ABCD'), ['FS-100']);
+    // Byte-swapped device (BADC swaps the two bytes inside each register).
+    assert.deepStrictEqual(interpretRegisters([0x5346, 0x312d, 0x3030], 'string', 'BADC'), ['FS-100']);
+    // Trailing NUL padding is trimmed.
+    assert.deepStrictEqual(interpretRegisters([0x4142, 0x4300], 'string', 'ABCD'), ['ABC']);
+    // Linear scale: 0–27648 → 0–100 %.
+    assert.deepStrictEqual(scaleValues([0, 13824, 27648], 100 / 27648, 0), [0, 50, 100]);
+    // Offset applies; strings pass through untouched.
+    assert.deepStrictEqual(scaleValues([100, 200], 0.1, -5), [5, 15]);
+    assert.deepStrictEqual(scaleValues(['FS-100'], 2, 1), ['FS-100']);
+  });
+  await test('read applies gain/offset scaling end-to-end', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    // Sim holding[0]=1000; scale ×0.1 −50 → 50.
+    const art = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 1, format: 'uint16', gain: 0.1, offset: -50 });
+    assert.deepStrictEqual(art.result.scaling, { gain: 0.1, offset: -50 });
+    assert.strictEqual(art.result.values[0], 50);
+    assert.strictEqual(art.result.tree[0].points[0].value, 50);
+  });
+  await test('64-bit interpretation + encode round-trip across all byte orders', async () => {
+    const { interpretRegisters, encodeRegisters, registerStride } = await import('../src/drivers/modbus.js');
+    assert.strictEqual(registerStride('float64'), 4);
+    assert.strictEqual(registerStride('int64'), 4);
+    for (const order of ['ABCD', 'CDAB', 'BADC', 'DCBA']) {
+      for (const [fmt, val] of [['float64', -1234.5], ['int64', -123456789], ['uint64', 4000000000], ['float32', 3.14], ['int32', -42]]) {
+        const regs = encodeRegisters(val, fmt, order);
+        assert.strictEqual(regs.length, registerStride(fmt), `${fmt} stride`);
+        const back = interpretRegisters(regs, fmt, order)[0];
+        if (fmt.startsWith('float')) assert.ok(Math.abs(Number(back) - val) < 0.01, `${fmt}/${order}: ${back} != ${val}`);
+        else assert.strictEqual(Number(back), val, `${fmt}/${order}`);
+      }
+    }
+    // A full-range uint64 survives as an exact decimal string (no Number precision loss).
+    const max = encodeRegisters('18446744073709551615', 'uint64', 'ABCD');
+    assert.strictEqual(interpretRegisters(max, 'uint64', 'ABCD')[0], '18446744073709551615');
+  });
+  await test('read interprets a register block as uint32 end-to-end', async () => {
+    const { interpretRegisters } = await import('../src/drivers/modbus.js');
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    const art = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 4, format: 'uint32', word_order: 'big' });
+    assert.strictEqual(art.result.format, 'uint32');
+    assert.deepStrictEqual(art.result.registers, [1000, 1001, 1002, 1003]); // raw regs preserved
+    assert.deepStrictEqual(art.result.values, interpretRegisters([1000, 1001, 1002, 1003], 'uint32', 'big'));
+    assert.strictEqual(art.result.values.length, 2);
+    // Rendered as an address→value table; 32-bit values stride two registers.
+    assert.deepStrictEqual(art.result.tree[0].points.map((p) => p.ref), ['holding:0', 'holding:2']);
+  });
+  await test('out-of-range / invalid params are rejected before hitting the wire', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    // address max is 65535
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 99999 }), /address.*≤ 65535/);
+    // area must be one of the declared enum options
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { area: 'nonsense' }), /area.*must be one of/);
+    // a non-numeric count is rejected
+    await assert.rejects(() => orchestrator.runVerb(ses.id, 'read', { count: 'lots' }), /count.*must be a number/);
+    // a valid read still works (regression), and undeclared params (timeout) pass through
+    const ok = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 2, timeout: 1500 });
+    assert.deepStrictEqual(ok.result.values, [1000, 1001]);
+  });
+
   await test('exception 0x0B produces the gateway-slave-dead verdict', async () => {
     const exSim = await startModbusSim({ port: 0, exception: 0x0b });
     const { orchestrator } = makeStack();
@@ -172,6 +283,28 @@ async function main() {
     const audit = store.listAudit();
     assert.ok(audit.some((a) => a.action === 'modbus-write'));
   });
+  await test('a float32 setpoint writes two registers via FC16 and read-back verifies', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 10, value: 50.25, format: 'float32', word_order: 'big' });
+    assert.strictEqual(prep.proposed_value, 50.25);
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.format, 'float32');
+    assert.ok(Math.abs(Number(art.result.read_back) - 50.25) < 0.01, `read-back ${art.result.read_back}`);
+    assert.strictEqual(art.result.verified, true);
+    // Reading the same block back as float32 sees the setpoint.
+    const rb = await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 10, count: 2, format: 'float32' });
+    assert.ok(Math.abs(rb.result.values[0] - 50.25) < 0.01);
+  });
+  await test('encodeRegisters ∘ interpretRegisters round-trips (int32, word order)', async () => {
+    const { encodeRegisters, interpretRegisters } = await import('../src/drivers/modbus.js');
+    for (const wo of ['big', 'little']) {
+      const regs = encodeRegisters(-123456, 'int32', wo);
+      assert.strictEqual(interpretRegisters(regs, 'int32', wo)[0], -123456);
+    }
+  });
   await test('a confirmation token is one-time', async () => {
     const { orchestrator } = makeStack();
     const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port });
@@ -195,6 +328,1144 @@ async function main() {
     const ses = orchestrator.openSession({ driverId: 'tcp-probe', host: '127.0.0.1', port: 1 });
     const art = await orchestrator.diagnose(ses.id, { timeout: 800 });
     assert.ok(['refused', 'filtered'].includes(art.verdicts[0].rule_id));
+  });
+  await test('DNS read resolves typed records (A/TXT/MX) against a chosen server', async () => {
+    const dnsSim = await startDnsSim({});
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dns', host: '127.0.0.1', port: dnsSim.port });
+    const a = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'A', timeout: 1500 });
+    assert.deepStrictEqual(a.result.tree[0].points.map((p) => p.value), ['10.0.0.5', '10.0.0.6']);
+    const mx = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'MX', timeout: 1500 });
+    assert.strictEqual(mx.result.tree[0].points[0].value, '10 mail.plant.local');
+    const txt = await orchestrator.runVerb(ses.id, 'read', { name: 'plc.plant.local', type: 'TXT', timeout: 1500 });
+    assert.strictEqual(txt.result.tree[0].points[0].value, 'site=plant1');
+    // A name with no record of the requested type resolves to zero records.
+    const none = await orchestrator.runVerb(ses.id, 'read', { name: 'gw.plant.local', type: 'MX', timeout: 1500 });
+    assert.strictEqual(none.result.records, 0);
+    dnsSim.close();
+  });
+
+  // ---- NTP / SNTP driver against the simulator ----
+  console.log('ntp / sntp driver (against simulator)');
+  await test('identify decodes stratum / reference / offset from an SNTP reply', async () => {
+    const sim = await startNtpSim({ stratum: 1, refId: 'GPS' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { timeout: 1500 });
+    assert.strictEqual(art.result.stratum, 1);
+    assert.strictEqual(art.result.reference_id, 'GPS');
+    assert.strictEqual(typeof art.result.offset_ms, 'number');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex');
+    sim.close();
+  });
+  await test('a synchronized server diagnoses healthy', async () => {
+    const sim = await startNtpSim({ stratum: 2 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    sim.close();
+  });
+  await test('stratum 16 produces the unsynchronized verdict', async () => {
+    const sim = await startNtpSim({ stratum: 16 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unsynchronized');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    sim.close();
+  });
+  await test('a skewed clock produces the large-offset verdict', async () => {
+    const sim = await startNtpSim({ stratum: 2, skewMs: 5000 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: sim.port });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'large-offset');
+    assert.strictEqual(art.verdicts[0].severity, 'warn');
+    sim.close();
+  });
+  await test('an unreachable time server diagnoses unreachable', async () => {
+    const { orchestrator } = makeStack();
+    // Bind then close a UDP socket to get a dead port.
+    const tmp = (await import('node:dgram')).createSocket('udp4');
+    const deadPort = await new Promise((r) => tmp.bind(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const ses = orchestrator.openSession({ driverId: 'ntp', host: '127.0.0.1', port: deadPort });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unreachable');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+  });
+
+  // ---- HTTP / REST device probe ----
+  console.log('http / rest driver (against simulator)');
+  {
+    const httpSim = await startHttpSim({ firmware: '1.4.2' });
+    await test('identify reports status, server and content type', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'identify', { path: '/', timeout: 2000 });
+      assert.strictEqual(art.result.status, 200);
+      assert.strictEqual(art.result.status_class, '2xx');
+      assert.match(art.result.content_type, /application\/json/);
+    });
+    await test('read decodes a JSON body into a dotted point tree', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'read', { path: '/', timeout: 2000 });
+      const refs = art.result.tree[0].points.map((p) => p.ref);
+      assert.ok(refs.includes('firmware') && refs.includes('tags.temperature_c'));
+      const temp = art.result.tree[0].points.find((p) => p.ref === 'tags.temperature_c');
+      assert.strictEqual(temp.value, 42.5);
+    });
+    await test('a 2xx endpoint diagnoses healthy', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const art = await orchestrator.diagnose(ses.id, { path: '/health', timeout: 2000 });
+      assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    });
+    await test('a 500 produces the server-error verdict; 401 the client-error verdict', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: httpSim.port });
+      const boom = await orchestrator.diagnose(ses.id, { path: '/boom', timeout: 2000 });
+      assert.strictEqual(boom.verdicts[0].rule_id, 'server-error');
+      assert.strictEqual(boom.verdicts[0].severity, 'error');
+      const secure = await orchestrator.diagnose(ses.id, { path: '/secure', timeout: 2000 });
+      assert.strictEqual(secure.verdicts[0].rule_id, 'client-error');
+    });
+    httpSim.close();
+    await test('an unreachable endpoint diagnoses unreachable', async () => {
+      const { orchestrator } = makeStack();
+      const tmp = net.createServer();
+      const deadPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+      const ses = orchestrator.openSession({ driverId: 'http', host: '127.0.0.1', port: deadPort });
+      const art = await orchestrator.diagnose(ses.id, { path: '/', timeout: 1500 });
+      assert.strictEqual(art.verdicts[0].rule_id, 'unreachable');
+    });
+  }
+
+  // ---- EtherNet/IP driver against the simulator ----
+  console.log('ethernet-ip driver (against simulator)');
+  const eipSim = await startEipSim({});
+  await test('identify decodes the CIP Identity object', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.product_name, 'Fieldscope Sim PLC');
+    assert.strictEqual(art.result.vendor, 'Rockwell Automation / Allen-Bradley');
+    assert.strictEqual(art.result.state, 'Operational');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('connect registers an encapsulation session', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', {});
+    assert.strictEqual(art.result.registered, true);
+    assert.ok(art.result.session_handle);
+  });
+  await test('read fetches a CIP Identity attribute via Get_Attribute_Single', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    // Attribute 7 = product name.
+    const name = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 7 });
+    assert.strictEqual(name.result.status, 'success');
+    assert.strictEqual(name.result.product_name, 'Fieldscope Sim PLC');
+    // Attribute 4 = revision.
+    const rev = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 4 });
+    assert.strictEqual(rev.result.revision, '2.7');
+  });
+  await test('reading an unsupported attribute returns the CIP status', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { class: 1, instance: 1, attribute: 99 });
+    assert.strictEqual(art.result.status, 'attribute not supported');
+  });
+  await test('operational device diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: eipSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('major-unrecoverable status bit produces the fault verdict', async () => {
+    const faultSim = await startEipSim({ status: 0x0800, state: 5 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: faultSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'major-unrecoverable-fault');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    faultSim.server.close();
+  });
+  await test('standby + unowned produces the keying/config verdict', async () => {
+    const standbySim = await startEipSim({ status: 0x0000, state: 2 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ethernet-ip', host: '127.0.0.1', port: standbySim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'standby-unowned');
+    standbySim.server.close();
+  });
+  eipSim.server.close();
+
+  // ---- MQTT driver against a live broker ----
+  console.log('mqtt driver (against broker)');
+  const broker = await startMqttBroker({});
+  await test('open broker diagnoses healthy (CONNACK rc=0)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('auth-required broker produces the not-authorized verdict', async () => {
+    const authBroker = await startMqttBroker({ username: 'ops', password: 'secret' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: authBroker.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'not-authorized');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    await authBroker.close();
+  });
+  await test('publish goes through the double-gate and read-back verifies retained', async () => {
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const params = { topic: 'fieldscope/test/x', payload: 'hello-42', qos: '1', retain: 'retained' };
+    const prep = await orchestrator.prepareWrite(ses.id, params);
+    assert.strictEqual(prep.point, 'fieldscope/test/x');
+    assert.strictEqual(prep.proposed_value, 'hello-42');
+    await assert.rejects(() => orchestrator.confirmWrite(ses.id, prep.token), /not ARMED/);
+    orchestrator.arm(ses.id, 'ARM');
+    const prep2 = await orchestrator.prepareWrite(ses.id, params);
+    const art = await orchestrator.confirmWrite(ses.id, prep2.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, 'hello-42');
+    assert.strictEqual(art.result.verified, true);
+    assert.ok(store.listAudit().some((a) => a.action === 'mqtt-publish'));
+  });
+  await test('browse samples the topic tree and sees the retained topic', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'mqtt', host: '127.0.0.1', port: broker.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { filter: '#', window_ms: 700 });
+    const points = art.result.tree[0].points;
+    const hit = points.find((p) => p.ref === 'fieldscope/test/x');
+    assert.ok(hit, 'expected the retained topic in the tree');
+    assert.strictEqual(hit.value, 'hello-42');
+  });
+  await broker.close();
+
+  // ---- SNMP driver against a live agent ----
+  console.log('snmp driver (against agent)');
+  const snmpSim = await startSnmpAgent({
+    interfaces: [
+      [1, 'eth0 uplink', 1_000_000_000, 1, 1, 0, 0, 0, 0],
+      [2, 'eth1 plc', 100_000_000, 1, 1, 3, 917, 0, 12],
+    ],
+  });
+  await test('identify reads the system group', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { community: 'public' });
+    assert.strictEqual(art.result.name, 'fieldscope-sim-switch');
+    assert.ok(art.result.uptime_days > 0);
+    // System-group enrichment: sysContact + vendor decoded from sysObjectID.
+    assert.strictEqual(art.result.contact, 'fieldscope');
+    assert.strictEqual(art.result.enterprise, 99999); // 1.3.6.1.4.1.99999.1
+    assert.strictEqual(art.result.vendor, 'enterprise 99999');
+  });
+  await test('interface error counters produce the flaky-cable verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'public' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'flaky-cable');
+    assert.match(art.result.facts.interfaces.worst, /eth1 plc/);
+  });
+  await test('clean counters diagnose healthy', async () => {
+    const cleanSim = await startSnmpAgent({});
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: cleanSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'public' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+    cleanSim.close();
+  });
+  await test('wrong community string produces the no-response verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'snmp', host: '127.0.0.1', port: snmpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { community: 'wrong', timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-response');
+    assert.match(art.verdicts[0].title, /community/);
+  });
+  snmpSim.close();
+
+  // ---- BACnet/IP driver against the simulator ----
+  console.log('bacnet driver (against simulator)');
+  const bacSim = await startBacnetSim({ deviceInstance: 260001, vendorId: 36, systemStatus: 'operational' });
+  await test('identify decodes I-Am (device instance, vendor, segmentation)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.device_instance, 260001);
+    assert.strictEqual(art.result.vendor, 'Automated Logic (ALC)');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('read system-status returns operational', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { property: 'system-status' });
+    assert.strictEqual(art.result.value, 'operational');
+  });
+  await test('read vendor-name returns the character string', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { property: 'vendor-name' });
+    assert.strictEqual(art.result.value, 'Automated Logic');
+  });
+  await test('operational device diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('browse enumerates the device object-list', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: bacSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', {});
+    assert.strictEqual(art.result.objects, 5);
+    const names = art.decode.map((o) => o.type_name);
+    assert.ok(names.includes('device') && names.includes('analog-input') && names.includes('binary-output'));
+    const dev = art.decode.find((o) => o.type_name === 'device');
+    assert.strictEqual(dev.instance, 260001);
+  });
+  await test('non-operational device produces the error verdict', async () => {
+    const badSim = await startBacnetSim({ deviceInstance: 260002, vendorId: 5, systemStatus: 'non-operational' });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'non-operational');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.close();
+  });
+  await test('silent address produces the no-iam BBMD verdict', async () => {
+    const { orchestrator } = makeStack();
+    // Bind a socket and immediately close so the port is almost certainly dead.
+    const ses = orchestrator.openSession({ driverId: 'bacnet', host: '127.0.0.1', port: 47999 });
+    const art = await orchestrator.diagnose(ses.id, { timeout: 600 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-iam');
+    assert.match(art.verdicts[0].title, /BBMD/);
+  });
+  bacSim.close();
+
+  // ---- DNP3 driver against the simulator ----
+  console.log('dnp3 driver (against simulator)');
+  await test('DNP3 CRC matches the opendnp3 reference algorithm', async () => {
+    const { dnp3Crc } = await import('../src/drivers/dnp3.js');
+    // Independent table-based reference (poly 0xA6BC, final complement).
+    const table = [];
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = c & 1 ? (c >>> 1) ^ 0xa6bc : c >>> 1;
+      table[i] = c & 0xffff;
+    }
+    const ref = (buf) => {
+      let c = 0;
+      for (const b of buf) c = (table[(c ^ b) & 0xff] ^ (c >>> 8)) & 0xffff;
+      return (~c) & 0xffff;
+    };
+    for (const v of [Buffer.from([0x05, 0x64, 0x05, 0xc9, 0x01, 0x00, 0x00, 0x04]), Buffer.from('0123456789')]) {
+      assert.strictEqual(dnp3Crc(v), ref(v));
+    }
+  });
+  const dnpSim = await startDnp3Sim({ outstation: 1024, iin1: 0x00, iin2: 0x00 });
+  await test('connect confirms the DNP3 link status', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.link_confirmed, true);
+    assert.strictEqual(art.result.outstation_address, 1024);
+    assert.strictEqual(art.result.crc_ok, true);
+  });
+  await test('identify decodes the IIN word', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.iin_raw, '0x0000');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('clean IIN diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1024 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('read decodes Class 0 binary + analog input points', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: dnpSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { source: 1, destination: 1024 });
+    assert.strictEqual(art.result.points, 5); // 3 binary + 2 analog
+    const bi = art.decode.filter((p) => p.group === 1);
+    const ai = art.decode.filter((p) => p.group === 30);
+    assert.deepStrictEqual(bi.map((p) => p.value), [1, 0, 1]);
+    assert.ok(Math.abs(ai[0].value - 230.4) < 0.01 && Math.abs(ai[1].value - 12.7) < 0.01);
+    assert.strictEqual(ai[0].flags.online, true);
+  });
+  await test('parseDnp3Objects decodes an object block directly', async () => {
+    const { parseDnp3Objects } = await import('../src/drivers/dnp3.js');
+    // g30 v1 (32-bit analog + flag), qual 0x00, index 5..5, flag online, value 12345.
+    const buf = Buffer.from([0x1e, 0x01, 0x00, 0x05, 0x05, 0x01, 0x39, 0x30, 0x00, 0x00]);
+    const pts = parseDnp3Objects(buf);
+    assert.strictEqual(pts.length, 1);
+    assert.strictEqual(pts[0].index, 5);
+    assert.strictEqual(pts[0].value, 12345);
+  });
+  await test('device-restart IIN bit produces the restart verdict', async () => {
+    const restartSim = await startDnp3Sim({ outstation: 1025, iin1: 0x80, iin2: 0x00 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: restartSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1025 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'device-restart');
+    restartSim.server.close();
+  });
+  await test('config-corrupt IIN2 bit produces the error verdict', async () => {
+    const badSim = await startDnp3Sim({ outstation: 1026, iin1: 0x00, iin2: 0x20 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dnp3', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id, { source: 1, destination: 1026 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'config-corrupt');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.server.close();
+  });
+  dnpSim.server.close();
+
+  // ---- IEC 60870-5-104 driver against the simulator ----
+  console.log('iec104 driver (against simulator)');
+  const iecSim = await startIec104Sim({ commonAddress: 1 });
+  await test('APCI/ASDU codec round-trips STARTDT + an I-frame ASDU', async () => {
+    const { buildU, buildI, buildInterrogationAsdu, parseApdu, parseAsdu } = await import('../src/drivers/iec104.js');
+    const u = parseApdu(buildU(0x07));
+    assert.strictEqual(u.format, 'U');
+    assert.strictEqual(u.u, 'STARTDT_act');
+    const i = parseApdu(buildI(5, 3, buildInterrogationAsdu(7)));
+    assert.strictEqual(i.format, 'I');
+    assert.strictEqual(i.ns, 5);
+    assert.strictEqual(i.nr, 3);
+    assert.strictEqual(i.asdu.type_id, 100);
+    assert.strictEqual(i.asdu.common_address, 7);
+    assert.strictEqual(i.asdu.cot, 6);
+  });
+  await test('connect confirms the STARTDT handshake', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.result.startdt_confirmed, true);
+  });
+  await test('read returns the interrogated point list', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.result.points, 5); // 3 measured + 1 single-point (breaker) + 1 time-tagged event
+    const refs = art.result.tree[0].points.map((p) => p.ref);
+    assert.ok(refs.includes('IOA 1001') && refs.includes('IOA 2001'));
+  });
+  await test('a time-tagged event (M_SP_TB_1) decodes its CP56Time2a timestamp', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    const event = art.decode.find((p) => p.ioa === 2101);
+    assert.ok(event, 'expected the time-tagged event at IOA 2101');
+    assert.strictEqual(event.time, '2026-08-16 14:30:12.345');
+    assert.strictEqual(event.value, 1);
+  });
+  await test('CP56Time2a codec round-trips through the driver decoder', async () => {
+    const { decodeCp56Time2a } = await import('../src/drivers/iec104.js');
+    // 2026-08-16 14:30:12.345 → ms 12345 (0x3039 LE), min 30, hr 14, day 16, mon 8, yr 26
+    const buf = Buffer.from([0x39, 0x30, 30, 14, 16, 8, 26]);
+    const t = decodeCp56Time2a(buf);
+    assert.strictEqual(t.time, '2026-08-16 14:30:12.345');
+    assert.strictEqual(t.invalid, false);
+  });
+  await test('single command drives the point through select-before-operate (double-gate)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { command: 'on', ioa: 2001, common_address: 1, timeout: 1500 });
+    assert.strictEqual(prep.current_value, 'OFF (open)'); // breaker starts open
+    assert.strictEqual(prep.proposed_value, 'ON (close)');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.selected, true);
+    assert.strictEqual(art.result.executed, true);
+    assert.strictEqual(art.result.terminated, true);
+    assert.strictEqual(art.result.verified, true);
+    // Read back: the breaker (IOA 2001) is now closed (value 1).
+    const rb = await orchestrator.runVerb(ses.id, 'read', { common_address: 1, timeout: 1500 });
+    const breaker = rb.result.tree[0].points.find((p) => p.ref === 'IOA 2001');
+    assert.strictEqual(String(breaker.value), '1');
+  });
+  await test('a station that rejects SELECT fails the command safely', async () => {
+    const noSim = await startIec104Sim({ commandNegative: true });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: noSim.port });
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { command: 'on', ioa: 2001, common_address: 1, timeout: 1200 });
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.selected, false);
+    assert.strictEqual(art.result.verified, false);
+    noSim.close();
+  });
+  await test('healthy station diagnoses confirmed', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('wrong common address produces the COT-46 verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: iecSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 99, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unknown-common-address');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+  });
+  await test('a station that never confirms STARTDT produces the silent-link verdict', async () => {
+    const silentSim = await startIec104Sim({ startdt: false });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: silentSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1000 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'no-startdt');
+    silentSim.close();
+  });
+  await test('a negative GI confirm produces the gi-rejected verdict', async () => {
+    const negSim = await startIec104Sim({ giNegative: true });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'iec104', host: '127.0.0.1', port: negSim.port });
+    const art = await orchestrator.diagnose(ses.id, { common_address: 1, timeout: 1500 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'gi-rejected');
+    negSim.close();
+  });
+  iecSim.close();
+
+  // ---- S7comm driver against the simulator ----
+  console.log('s7comm driver (against simulator)');
+  const s7Sim = await startS7Sim({ acceptRack: 0, acceptSlot: 2, refuseWrongSlot: true });
+  await test('connect completes COTP + S7 setup at the right rack/slot', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { rack: 0, slot: 2 });
+    assert.strictEqual(art.result.cotp_confirmed, true);
+    assert.strictEqual(art.result.s7_setup, true);
+    assert.strictEqual(art.result.negotiated_pdu, 480);
+  });
+  await test('identify reads the module order number and firmware from SZL', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { rack: 0, slot: 2 });
+    assert.strictEqual(art.result.order_number, '6ES7 315-2EH14-0AB0');
+    assert.strictEqual(art.result.firmware, '3.2');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected COTP tx/rx hex in raw');
+  });
+  await test('correct rack/slot diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.diagnose(ses.id, { rack: 0, slot: 2 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('read fetches DB bytes via ReadVar and interprets them', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    // DB1.DBB0, 8 bytes, as uint16 → [100, 200, then the float bytes as two words].
+    const u16 = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 1, start: 0, count: 4, format: 'uint16' });
+    assert.strictEqual(u16.result.status, 'success');
+    assert.deepStrictEqual(u16.result.values, [100, 200]);
+    assert.strictEqual(u16.result.address, 'DB1.DBB0');
+    // Rendered as a byte-addressed value table (uint16 strides two bytes).
+    assert.deepStrictEqual(u16.result.tree[0].points.map((p) => p.ref), ['DB1.DBB0', 'DB1.DBB2']);
+    // The float at byte 4.
+    const f = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 1, start: 4, count: 4, format: 'float32' });
+    assert.ok(Math.abs(f.result.values[0] - 50.24) < 0.01, `got ${f.result.values[0]}`);
+  });
+  await test('reading a non-existent DB returns the S7 return code', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.runVerb(ses.id, 'read', { rack: 0, slot: 2, area: 'DB', db: 99, start: 0, count: 2 });
+    assert.strictEqual(art.result.status, 'object does not exist');
+  });
+  await test('wrong rack/slot produces the COTP-refused verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 's7comm', host: '127.0.0.1', port: s7Sim.port });
+    const art = await orchestrator.diagnose(ses.id, { rack: 0, slot: 1, timeout: 1000 });
+    // The sim drops the connection on a wrong TSAP; the driver reports COTP not
+    // confirmed (or a transport error) — both resolve to an actionable verdict.
+    assert.ok(['cotp-refused', 'port-closed'].includes(art.verdicts[0].rule_id));
+  });
+  s7Sim.server.close();
+
+  // ---- Sparkplug B driver against a broker + edge node ----
+  console.log('sparkplug driver (against broker + edge node)');
+  await test('protobuf codec round-trips seq and metrics', async () => {
+    const { encodePayload, decodePayload } = await import('../src/drivers/sparkplug.js');
+    const enc = encodePayload({ seq: 200, timestamp: 5, metrics: [{ name: 'Temperature', alias: 1, datatype: 9, intValue: 72 }] });
+    const dec = decodePayload(enc);
+    assert.strictEqual(dec.seq, 200);
+    assert.strictEqual(dec.metrics.length, 1);
+    assert.strictEqual(dec.metrics[0].name, 'Temperature');
+    assert.strictEqual(dec.metrics[0].alias, 1);
+    assert.strictEqual(dec.metrics[0].value, 72); // int_value decoded
+  });
+  const spBroker = await startMqttBroker({});
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  await test('healthy namespace: birth + contiguous seq diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1200 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantA', node: 'N1', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('a dropped sequence number produces the sequence-gap verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1400 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantB', node: 'N2', intervalMs: 70, gapAfter: 3 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'sequence-gap');
+    assert.ok(art.result.facts.sparkplug.total_gaps > 0);
+  });
+  await test('an NDEATH produces the node-death verdict', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.diagnose(ses.id, { window_ms: 1400 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantC', node: 'N3', intervalMs: 70, emitDeathAfter: 4 });
+    const art = await p;
+    await node.stop();
+    assert.strictEqual(art.verdicts[0].rule_id, 'node-death');
+  });
+  await test('read resolves live metric values (aliases resolved from births)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.runVerb(ses.id, 'read', { group: 'PlantR', window_ms: 1200 });
+    await sleep(200);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantR', node: 'NR', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    const area = art.result.tree.find((a) => a.area.includes('PlantR/NR'));
+    assert.ok(area, 'expected the PlantR/NR node with metrics');
+    const byName = Object.fromEntries(area.points.map((pt) => [pt.ref, pt.value]));
+    assert.strictEqual(byName.Pressure, 30); // from the birth
+    assert.strictEqual(byName.RunState, 1);
+    assert.ok(Number(byName.Temperature) >= 72); // alias 1, updated by NDATA
+  });
+  await test('browse renders the node tree with lifecycle state', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'sparkplug', host: '127.0.0.1', port: spBroker.port });
+    const p = orchestrator.runVerb(ses.id, 'browse', { window_ms: 1000 });
+    await sleep(150);
+    const node = startSparkplugNode({ brokerPort: spBroker.port, group: 'PlantD', node: 'N4', intervalMs: 80 });
+    const art = await p;
+    await node.stop();
+    const points = art.result.tree[0].points;
+    assert.ok(points.some((pt) => pt.ref === 'PlantD/N4'));
+  });
+  await spBroker.close();
+
+  // ---- OPC UA driver against the simulator ----
+  console.log('opcua driver (against simulator)');
+  const uaSim = await startOpcuaSim({});
+  await test('connect completes the UACP Hello/Ack handshake', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'connect', {});
+    assert.strictEqual(art.result.handshake, 'acknowledged');
+    assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex in raw');
+  });
+  await test('identify surfaces the negotiated transport limits', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'identify', {});
+    assert.strictEqual(art.result.acknowledged, true);
+    assert.strictEqual(art.result.receive_buffer, 65536);
+    assert.strictEqual(art.result.max_chunk_count, 64);
+  });
+  await test('acknowledged handshake diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.diagnose(ses.id);
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('rejected endpoint URL produces the endpoint-url-invalid verdict', async () => {
+    const badSim = await startOpcuaSim({ rejectEndpoint: true, errorCode: 0x80830000 });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: badSim.port });
+    const art = await orchestrator.diagnose(ses.id, { endpoint_url: 'opc.tcp://wrong-host/UA' });
+    assert.strictEqual(art.verdicts[0].rule_id, 'endpoint-url-invalid');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    badSim.server.close();
+  });
+  await test('browse opens a secure channel and enumerates GetEndpoints', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'opcua', host: '127.0.0.1', port: uaSim.port });
+    const art = await orchestrator.runVerb(ses.id, 'browse', {});
+    assert.strictEqual(art.result.endpoints, 2);
+    assert.strictEqual(art.result.secured, 1);
+    assert.strictEqual(art.result.unsecured, 1);
+    // One unsecured (None) group and one secured group, each with a policy type.
+    const areas = art.result.tree.map((a) => a.area);
+    assert.ok(areas.some((a) => a.startsWith('No security')));
+    assert.ok(areas.some((a) => a.startsWith('Secured')));
+    const policies = art.result.tree.flatMap((a) => a.points.map((p) => p.type));
+    assert.ok(policies.includes('None') && policies.includes('Basic256Sha256'));
+    // A None endpoint alongside secured ones raises the security verdict.
+    assert.strictEqual(art.verdicts?.[0]?.rule_id, 'unsecured-endpoint-offered');
+    assert.strictEqual(art.verdicts[0].severity, 'warn');
+  });
+  await test('opcua security rules classify endpoint security correctly', async () => {
+    const { rules } = makeStack();
+    const only = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 0, unsecured: 2 } });
+    assert.strictEqual(only[0].rule_id, 'only-unsecured-endpoints');
+    assert.strictEqual(only[0].severity, 'error');
+    const mixed = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 1, unsecured: 1 } });
+    assert.strictEqual(mixed[0].rule_id, 'unsecured-endpoint-offered');
+    const secure = rules.evaluate('opcua', { getendpoints: { ok: true, secured: 2, unsecured: 0 } });
+    assert.strictEqual(secure[0].rule_id, 'all-endpoints-secured');
+    assert.strictEqual(secure[0].severity, 'ok');
+    // The handshake-only diagnose (no getendpoints facts) must NOT match these.
+    const handshake = rules.evaluate('opcua', { transport: { tcp_connect: 'success' }, uacp: { ack: true } });
+    assert.strictEqual(handshake[0].rule_id, 'healthy');
+  });
+  uaSim.server.close();
+
+  // ---- CoAP driver against the simulator ----
+  console.log('coap driver (against simulator)');
+  {
+    const coapSim = await startCoapSim({});
+    await test('identify GETs /.well-known/core and counts resources', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'identify', { timeout: 1500 });
+      assert.strictEqual(art.result.code, '2.05');
+      assert.strictEqual(art.result.resources, 3);
+      assert.ok(art.raw.tx && art.raw.rx, 'expected tx/rx hex');
+    });
+    await test('browse enumerates the CoRE Link Format resource tree', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const art = await orchestrator.runVerb(ses.id, 'browse', { timeout: 1500 });
+      const refs = art.result.tree[0].points.map((p) => p.ref);
+      assert.deepStrictEqual(refs, ['/sensors/temp', '/sensors/humidity', '/actuators/led']);
+      const temp = art.result.tree[0].points.find((p) => p.ref === '/sensors/temp');
+      assert.strictEqual(temp.type, 'temperature');
+    });
+    await test('read returns a resource payload; a missing path is 4.04', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const ok = await orchestrator.runVerb(ses.id, 'read', { path: '/sensors/temp', timeout: 1500 });
+      assert.strictEqual(ok.result.code, '2.05');
+      assert.strictEqual(ok.result.payload, '22.4');
+      const miss = await orchestrator.runVerb(ses.id, 'read', { path: '/nope', timeout: 1500 });
+      assert.strictEqual(miss.result.code, '4.04');
+    });
+    await test('a 2.05 response diagnoses healthy; a dead port is unreachable', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: coapSim.port });
+      const good = await orchestrator.diagnose(ses.id, { timeout: 1500 });
+      assert.strictEqual(good.verdicts[0].rule_id, 'healthy');
+      const tmp = (await import('node:dgram')).createSocket('udp4');
+      const deadPort = await new Promise((r) => tmp.bind(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+      const dead = orchestrator.openSession({ driverId: 'coap', host: '127.0.0.1', port: deadPort });
+      const bad = await orchestrator.diagnose(dead.id, { timeout: 600 });
+      assert.strictEqual(bad.verdicts[0].rule_id, 'unreachable');
+    });
+    coapSim.close();
+  }
+
+  // ---- IP Scanner (TCP host/port discovery) ----
+  console.log('ip scanner (discovery)');
+  // Two ad-hoc TCP services on ephemeral ports: one open, plus a known-closed one.
+  const svcA = net.createServer((s) => s.on('error', () => {}));
+  const svcB = net.createServer((s) => s.on('error', () => {}));
+  await new Promise((r) => svcA.listen(0, '127.0.0.1', r));
+  await new Promise((r) => svcB.listen(0, '127.0.0.1', r));
+  const pA = svcA.address().port;
+  const pB = svcB.address().port;
+  await test('connect reports an open port', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'connect', { port: pA, timeout: 800 });
+    assert.strictEqual(art.result.state, 'open');
+  });
+  await test('browse scans a range and finds the open ports', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const lo = Math.min(pA, pB);
+    const hi = Math.max(pA, pB);
+    const art = await orchestrator.runVerb(ses.id, 'browse', { start: lo, end: hi, timeout: 300 });
+    const refs = art.result.tree[0].points.map((p) => p.ref);
+    assert.ok(refs.includes(`${pA}/tcp`) && refs.includes(`${pB}/tcp`));
+  });
+  await test('a refused port reads as closed and host as up', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    // Bind then immediately close so the port is refused (host still up).
+    const tmp = net.createServer();
+    const closedPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const art = await orchestrator.runVerb(ses.id, 'connect', { port: closedPort, timeout: 800 });
+    assert.strictEqual(art.result.state, 'closed');
+  });
+  await test('CIDR sweep finds the loopback host up', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'ipscan', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'read', { cidr: '127.0.0.1/32', port: pA, timeout: 500 });
+    assert.strictEqual(art.result.hosts_up, 1);
+  });
+  svcA.close();
+  svcB.close();
+
+  // ---- DHCP / BOOTP ----
+  console.log('dhcp / bootp (discovery)');
+  const dhcpSim = await startDhcpSim({});
+  await test('identify decodes a DHCP OFFER (ip, subnet, router, lease)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 });
+    assert.strictEqual(art.result.first_offer.your_ip, '10.10.0.50');
+    assert.strictEqual(art.result.first_offer.options.subnet_mask, '255.255.255.0');
+    assert.strictEqual(art.result.first_offer.options.lease_seconds, 86400);
+  });
+  await test('single server diagnoses healthy', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'healthy');
+  });
+  await test('two servers answering produces the rogue-server verdict', async () => {
+    const rogueSim = await startDhcpSim({
+      offers: [
+        { yourIp: '10.10.0.50', serverId: '10.10.0.1', subnet: '255.255.255.0', router: '10.10.0.1', dns: '10.10.0.1', lease: 86400 },
+        { yourIp: '192.168.1.77', serverId: '192.168.1.1', subnet: '255.255.255.0', router: '192.168.1.1', dns: '8.8.8.8', lease: 600 },
+      ],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { server: '127.0.0.1', server_port: rogueSim.port, client_port: 0, window_ms: 1000 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'rogue-server');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    rogueSim.close();
+  });
+  await test('assign runs DISCOVER→REQUEST→ACK and reads back the leased IP (double-gate)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { mac: 'aa:bb:cc:11:22:33', requested_ip: '10.10.0.50', server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    assert.strictEqual(prep.proposed_value, '10.10.0.50');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, '10.10.0.50');
+    assert.strictEqual(art.result.verified, true);
+    assert.strictEqual(art.result.mac, 'aa:bb:cc:11:22:33');
+  });
+  await test('classic BOOTP assigns a MAC its address in one request/reply', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'dhcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { mode: 'bootp', mac: 'de:ad:be:ef:00:01', server: '127.0.0.1', server_port: dhcpSim.port, client_port: 0, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.mode, 'bootp');
+    assert.strictEqual(art.result.ack, true); // BOOTREPLY
+    assert.strictEqual(art.result.read_back, '10.10.0.50');
+    assert.strictEqual(art.result.lease_seconds, null); // BOOTP has no lease
+  });
+  dhcpSim.close();
+
+  // ---- PROFINET DCP / LLDP ----
+  console.log('profinet-dcp (discovery)');
+  const dcpSim = await startProfinetDcpSim({});
+  await test('identify decodes device station name / IP / vendor / role', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'identify', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    assert.strictEqual(art.result.devices, 3);
+    const plc = art.decode.find((d) => d.name_of_station === 'plc-line3');
+    assert.strictEqual(plc.ip, '192.168.0.10');
+    assert.strictEqual(plc.role, 'IO-Controller');
+  });
+  await test('healthy segment diagnoses devices-found', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'devices-found');
+  });
+  await test('duplicate station name produces the error verdict', async () => {
+    const dupSim = await startProfinetDcpSim({
+      devices: [
+        { name: 'io-station-1', ip: '192.168.0.20', vendor: 'Siemens, ET200SP', role: 0x01 },
+        { name: 'io-station-1', ip: '192.168.0.21', vendor: 'Siemens, ET200SP', role: 0x01 },
+      ],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: dupSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'duplicate-name');
+    assert.strictEqual(art.verdicts[0].severity, 'error');
+    dupSim.close();
+  });
+  await test('unconfigured IP (0.0.0.0) produces the commissioning verdict', async () => {
+    const newSim = await startProfinetDcpSim({
+      devices: [{ name: 'fresh-device', ip: '0.0.0.0', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.diagnose(ses.id, { responder: '127.0.0.1', responder_port: newSim.port, window_ms: 900 });
+    assert.strictEqual(art.verdicts[0].rule_id, 'unconfigured-ip');
+    newSim.close();
+  });
+  await test('browse builds a physical port topology from LLDP (which port cables to what)', async () => {
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { responder: '127.0.0.1', responder_port: dcpSim.port, window_ms: 900 });
+    const t = art.result.topology;
+    assert.strictEqual(t.kind, 'physical');
+    // The PLC's X1 P2 carries a device, exposed as a linked port on the node.
+    const plc = t.nodes.find((n) => n.label === 'plc-line3');
+    assert.strictEqual(plc.kind, 'controller');
+    assert.ok(plc.ports.some((p) => p.name === 'X1 P2' && p.linked));
+    // The line PLC—dev1—dev2 collapses to two deduped port-to-port cables.
+    assert.strictEqual(t.links.length, 2);
+    const cable = t.links.find((l) => [l.a.station, l.b.station].sort().join() === ['io-station-1', 'plc-line3'].sort().join());
+    assert.ok(cable, 'expected a plc-line3 ↔ io-station-1 cable');
+    const ports = [cable.a.port, cable.b.port].sort();
+    assert.deepStrictEqual(ports, ['X1 P1', 'X1 P2']);
+  });
+  await test('logical fallback when no LLDP neighbours are present', async () => {
+    const flatSim = await startProfinetDcpSim({
+      devices: [{ name: 'lonely-dev', ip: '10.0.0.5', subnet: '255.255.255.0', vendor: 'Acme', role: 0x01 }], // no ports
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const art = await orchestrator.runVerb(ses.id, 'browse', { responder: '127.0.0.1', responder_port: flatSim.port, window_ms: 700 });
+    assert.strictEqual(art.result.topology.kind, 'logical');
+    assert.ok(art.result.topology.nodes.some((n) => n.kind === 'segment'));
+    flatSim.close();
+  });
+  await test('DCP Set assigns IP / subnet / gateway (through the double-gate, with read-back)', async () => {
+    const cfgSim = await startProfinetDcpSim({
+      devices: [{ name: 'fresh-device', ip: '0.0.0.0', subnet: '0.0.0.0', gateway: '0.0.0.0', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    orchestrator.arm(ses.id, 'ARM');
+    const wp = { operation: 'set-ip', target: 'fresh-device', ip: '192.168.10.5', subnet: '255.255.255.0', gateway: '192.168.10.1', responder: '127.0.0.1', responder_port: cfgSim.port, window_ms: 900 };
+    const prep = await orchestrator.prepareWrite(ses.id, wp);
+    assert.strictEqual(prep.current_value, '(unconfigured)');
+    const art = await orchestrator.confirmWrite(ses.id, prep.token);
+    assert.strictEqual(art.result.ack, true);
+    assert.strictEqual(art.result.read_back, '192.168.10.5');
+    assert.strictEqual(art.result.verified, true);
+    cfgSim.close();
+  });
+  await test('DCP Set renames a station (NameOfStation)', async () => {
+    const cfgSim = await startProfinetDcpSim({
+      devices: [{ name: 'old-name', ip: '192.168.0.30', subnet: '255.255.255.0', gateway: '192.168.0.1', vendor: 'Siemens, ET200SP', role: 0x01 }],
+    });
+    const { orchestrator } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'profinet-dcp', host: '127.0.0.1' });
+    const ctx = { host: '127.0.0.1', armed: true, params: { operation: 'set-name', target: 'old-name', new_name: 'press-42', responder: '127.0.0.1', responder_port: cfgSim.port, window_ms: 900 } };
+    const out = await profinetDcp.verbs.write(ctx);
+    assert.strictEqual(out.artifact.result.ack, true);
+    assert.strictEqual(out.artifact.result.read_back, 'press-42');
+    assert.strictEqual(out.artifact.result.verified, true);
+    cfgSim.close();
+  });
+  await test('DCP Set refuses to compose a frame when not ARMED', async () => {
+    await assert.rejects(
+      () => profinetDcp.verbs.write({ host: '127.0.0.1', armed: false, params: { operation: 'set-name', target: 'x', new_name: 'y' } }),
+      /not ARMED/,
+    );
+  });
+  dcpSim.close();
+
+  // ---- config backup & drift detection ----
+  console.log('config backup (drift detection)');
+  {
+    const bakSim = await startModbusSim({});
+    await test('normalizeSnapshot flattens identity + tree points into a sorted list', async () => {
+      const { normalizeSnapshot } = await import('../src/backup/backup.js');
+      const snap = normalizeSnapshot([
+        { verb: 'identify', result: { unit_id: 1, rtt_ms: 4.2, modbus_responding: true } },
+        { verb: 'browse', result: { tree: [{ area: 'holding', points: [{ ref: 'holding:1', value: 1001, type: 'uint16' }, { ref: 'holding:0', value: 1000, type: 'uint16' }] }] } },
+      ]);
+      // rtt_ms and modbus_responding are transient — excluded; identity kept.
+      assert.ok(snap.points.some((p) => p.key === 'identity/unit_id'));
+      assert.ok(!snap.points.some((p) => p.point === 'rtt_ms'));
+      // Sorted by key (stable diff).
+      const keys = snap.points.map((p) => p.key);
+      assert.deepStrictEqual(keys, [...keys].sort());
+    });
+    await test('captureConfig stores a named baseline of the readable config', async () => {
+      const { captureConfig } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const { backup } = await captureConfig(orchestrator, store, ses.id, { name: 'commissioned' });
+      assert.strictEqual(backup.name, 'commissioned');
+      assert.ok(backup.point_count > 0, 'expected captured points');
+      assert.deepStrictEqual(store.getBackup(backup.id).snapshot.points, backup.snapshot.points);
+      assert.ok(store.listBackups().some((b) => b.id === backup.id));
+    });
+    await test('a register write shows up as drift against the baseline', async () => {
+      const { captureConfig, diffSnapshots } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'baseline' })).backup;
+      // Change holding[0] through the double-gate.
+      orchestrator.arm(ses.id, 'ARM');
+      const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 0, value: 4242 });
+      await orchestrator.confirmWrite(ses.id, prep.token);
+      const after = (await captureConfig(orchestrator, store, ses.id, { name: 'after-change' })).backup;
+      const drift = diffSnapshots(base.snapshot, after.snapshot);
+      assert.strictEqual(drift.severity, 'warn');
+      const changed = drift.rows.find((r) => r.status === 'changed');
+      assert.ok(changed, 'expected a changed point');
+      assert.strictEqual(Number(changed.after), 4242);
+      assert.ok(drift.summary.changed >= 1);
+    });
+    await test('re-capturing an unchanged device reports no drift', async () => {
+      const { captureConfig, diffSnapshots } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const a = (await captureConfig(orchestrator, store, ses.id, { name: 'a' })).backup;
+      const b = (await captureConfig(orchestrator, store, ses.id, { name: 'b' })).backup;
+      const drift = diffSnapshots(a.snapshot, b.snapshot);
+      assert.strictEqual(drift.severity, 'ok');
+      assert.strictEqual(drift.summary.drifted, 0);
+    });
+    await test('recheckBaseline re-opens the device target and reports live drift', async () => {
+      const { captureConfig, recheckBaseline } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'baseline' })).backup;
+      // Clean recheck: no session needed, opens its own from the stored address.
+      const clean = await recheckBaseline(orchestrator, store, base.id);
+      assert.strictEqual(clean.severity, 'ok');
+      // Drift a register, then recheck again.
+      orchestrator.arm(ses.id, 'ARM');
+      const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 0, value: 7777 });
+      await orchestrator.confirmWrite(ses.id, prep.token);
+      const drifted = await recheckBaseline(orchestrator, store, base.id);
+      assert.strictEqual(drifted.severity, 'warn');
+      assert.ok(drifted.summary.drifted >= 1);
+      // keep:false must not leave the transient recheck snapshot behind.
+      assert.strictEqual(store.listBackups().filter((b) => b.id !== base.id).length, 0);
+    });
+    await test('DriftWatcher emits a drift event on its immediate first tick', async () => {
+      const { captureConfig, DriftWatcher } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'watched' })).backup;
+      const events = [];
+      const watcher = new DriftWatcher({ orchestrator, store, emit: (e, p) => events.push({ e, p }) });
+      const result = await watcher.tick(base.id); // deterministic single tick
+      watcher.stopAll();
+      assert.strictEqual(result.severity, 'ok');
+      assert.ok(events.some((x) => x.e === 'drift' && x.p.baselineId === base.id));
+    });
+    await test('export → import round-trips a baseline snapshot', async () => {
+      const { captureConfig } = await import('../src/backup/backup.js');
+      const { orchestrator, store } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const base = (await captureConfig(orchestrator, store, ses.id, { name: 'exportme' })).backup;
+      // Simulate the export doc, then import it as a new baseline.
+      const doc = { fieldscope_backup: 1, name: base.name, driver_id: base.driver_id, address: base.address, snapshot: base.snapshot };
+      const imported = store.saveBackup({ driver_id: doc.driver_id, name: `${doc.name} (imported)`, address: doc.address, snapshot: doc.snapshot });
+      assert.deepStrictEqual(imported.snapshot.points, base.snapshot.points);
+      assert.strictEqual(imported.point_count, base.point_count);
+    });
+    await test('modbus browse honors an interpretation format (float32 strides two registers)', async () => {
+      const { orchestrator } = makeStack();
+      const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: bakSim.port, unitId: 1 });
+      const art = await orchestrator.runVerb(ses.id, 'browse', { format: 'float32' });
+      const holding = art.result.tree.find((t) => t.area === 'holding');
+      assert.strictEqual(holding.points[0].type, 'float32');
+      // Two registers per value → refs stride by 2.
+      assert.deepStrictEqual(holding.points.slice(0, 2).map((p) => p.ref), ['holding:0', 'holding:2']);
+      // Bit areas keep bool regardless of format.
+      const coils = art.result.tree.find((t) => t.area === 'coils');
+      assert.strictEqual(coils.points[0].type, 'bool');
+    });
+    bakSim.server.close();
+  }
+
+  // ---- monitor summary verdicts ----
+  console.log('monitor summary (verdicts)');
+  await test('monitor rulepack classifies loss / jitter / down', async () => {
+    const { rules } = makeStack();
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: false, loss_pct: 100 } })[0].rule_id, 'link-down');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 12, jitter_ms: 3 } })[0].rule_id, 'intermittent-loss');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 0, jitter_ms: 120 } })[0].rule_id, 'high-jitter');
+    assert.strictEqual(rules.evaluate('monitor', { monitor: { up: true, loss_pct: 0, jitter_ms: 5 } })[0].rule_id, 'stable');
+  });
+  await test('stopping a healthy monitor stores a stable-link summary artifact', async () => {
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    const mon = orchestrator.startMonitor(ses.id, { cadence: 250 });
+    await new Promise((r) => setTimeout(r, 700));
+    const stop = orchestrator.stopMonitor(mon.monitorId);
+    assert.ok(stop.summary.samples >= 2, 'expected multiple samples');
+    assert.strictEqual(stop.summary.loss_pct, 0);
+    assert.strictEqual(stop.verdicts[0].rule_id, 'stable');
+    // Landed in the session timeline as a monitor artifact with its verdict.
+    const arts = store.listArtifacts(ses.id);
+    const summary = arts.find((a) => a.verb === 'monitor');
+    assert.ok(summary && summary.verdicts[0].severity === 'ok');
+  });
+  await test('stopping a monitor on a dead port stores a link-down verdict', async () => {
+    const { orchestrator } = makeStack();
+    // A refused TCP port: bind then close so connects fail immediately.
+    const tmp = net.createServer();
+    const deadPort = await new Promise((r) => tmp.listen(0, '127.0.0.1', () => { const p = tmp.address().port; tmp.close(() => r(p)); }));
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: deadPort, unitId: 1 });
+    const mon = orchestrator.startMonitor(ses.id, { cadence: 250 });
+    await new Promise((r) => setTimeout(r, 700));
+    const stop = orchestrator.stopMonitor(mon.monitorId);
+    assert.strictEqual(stop.summary.loss_pct, 100);
+    assert.strictEqual(stop.verdicts[0].rule_id, 'link-down');
+    assert.strictEqual(stop.verdicts[0].severity, 'error');
+  });
+
+  // ---- commissioning report (§12 phase 8) ----
+  console.log('commissioning report');
+  await test('report renders findings, timeline, and audit with redaction', async () => {
+    const { renderSessionReport, redact } = await import('../src/report/report.js');
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    await orchestrator.diagnose(ses.id);
+    await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 3 }); // → inventory
+    orchestrator.arm(ses.id, 'ARM');
+    const prep = await orchestrator.prepareWrite(ses.id, { area: 'holding', address: 3, value: 77 });
+    await orchestrator.confirmWrite(ses.id, prep.token);
+    const html = renderSessionReport({
+      session: store.getSession(ses.id),
+      artifacts: store.listArtifacts(ses.id),
+      audit: store.listAudit(),
+    });
+    assert.match(html, /Fieldscope commissioning report/);
+    assert.match(html, /Modbus responding normally/); // verdict made it in
+    assert.match(html, /Point &amp; object inventory/); // inventory section present
+    assert.match(html, /holding:0/); // an enumerated point made it into the inventory
+    assert.match(html, /modbus-write/); // audit trail made it in
+    // credential redaction
+    const red = redact({ params: { community: 'private', password: 'hunter2', address: 3 } });
+    assert.strictEqual(red.params.community, '•••redacted•••');
+    assert.strictEqual(red.params.password, '•••redacted•••');
+    assert.strictEqual(red.params.address, 3);
+    assert.ok(!html.includes('hunter2'));
+  });
+  await test('inventory CSV export lists enumerated points with a header row', async () => {
+    const { toInventoryCsv } = await import('../src/report/report.js');
+    const { orchestrator, store } = makeStack();
+    const ses = orchestrator.openSession({ driverId: 'modbus-tcp', host: '127.0.0.1', port: sim.port, unitId: 1 });
+    await orchestrator.runVerb(ses.id, 'read', { area: 'holding', address: 0, count: 3 });
+    const csv = toInventoryCsv(store.getSession(ses.id), store.listArtifacts(ses.id));
+    const lines = csv.trim().split('\r\n');
+    assert.strictEqual(lines[0], 'artifact,verb,area,point,value,type');
+    assert.ok(lines.some((l) => l.includes('holding:0') && l.includes(',1000,')));
+    assert.strictEqual(lines.length, 4); // header + 3 registers
   });
 
   sim.server.close();
