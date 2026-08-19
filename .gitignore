@@ -2,6 +2,8 @@ node_modules/
 dist/
 data/
 release/
+packaging/windows/staging/
+packaging/windows/dist-installer/
 *.db
 *.db-*
 .env

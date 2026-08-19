@@ -79,6 +79,44 @@ jobs:
         run: gh release upload "${{ needs.release.outputs.tag }}" release/*-portable-*.tar.gz --clobber
         shell: bash
 
+  windows-installer:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build client
+        shell: bash
+        run: cd client && npm ci && npm run build
+      - name: Stage the app with the bundled Node runtime
+        shell: pwsh
+        run: |
+          $stage = "packaging/windows/staging"
+          New-Item -ItemType Directory -Force -Path "$stage/server", "$stage/client" | Out-Null
+          Copy-Item server/src        "$stage/server/src" -Recurse
+          Copy-Item server/rulepacks  "$stage/server/rulepacks" -Recurse
+          Copy-Item server/index.js, server/package.json, server/package-lock.json "$stage/server/"
+          Copy-Item client/dist       "$stage/client/dist" -Recurse
+          Copy-Item README.md, LICENSE "$stage/"
+          Copy-Item packaging/windows/fieldscope-launch.cmd "$stage/"
+          # Production server deps (native better-sqlite3 for win-x64).
+          Push-Location "$stage/server"; npm ci --omit=dev; Pop-Location
+          # Bundle the runner's Node runtime so end users install nothing.
+          Copy-Item (Get-Command node).Source "$stage/node.exe"
+      - name: Compile the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $ver = "${{ needs.release.outputs.tag }}" -replace '^v',''
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$ver" packaging/windows/fieldscope.iss
+      - name: Upload installer to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" packaging/windows/dist-installer/*.exe --clobber
+
   image:
     needs: release
     runs-on: ubuntu-latest

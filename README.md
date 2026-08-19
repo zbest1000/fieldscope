@@ -47,6 +47,7 @@ Three ways to get Fieldscope onto a machine, in order of least setup:
 
 | | What you get | Requirements | Get it |
 |---|---|---|---|
+| **Windows installer** | `Fieldscope-Setup-<ver>.exe` — bundles the Node runtime, installs per-user (no admin), adds Start-Menu / Desktop shortcuts and an uninstaller. Nothing else to install. | Windows 10/11 x64 | `Fieldscope-Setup-<ver>.exe` from [Releases](../../releases) → run it → launch from the Start Menu |
 | **Portable bundle** | Unpack-and-run — server deps (incl. the native SQLite module) baked in for your OS/arch. No install step, no network. Ideal for an **air-gapped** commissioning laptop. | Node.js ≥ 20 | `fieldscope-<ver>-portable-<os>-<arch>.tar.gz` from [Releases](../../releases) → unpack → `./fieldscope.sh` (or `fieldscope.cmd`) |
 | **Install bundle** | Small, platform-neutral source bundle; fetches production deps on first install. | Node.js ≥ 20 + npm, one-time network for `npm ci` | `fieldscope-<ver>.tar.gz` from [Releases](../../releases) → unpack → `./install.sh` → `./fieldscope.sh` |
 | **Container** | `ghcr.io/<owner>/fieldscope:<ver>` (and `:latest`). | Docker | `docker run -p 5100:5100 -v fieldscope-data:/data ghcr.io/<owner>/fieldscope:latest` |
