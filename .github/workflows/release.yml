@@ -1,0 +1,95 @@
+name: Release
+
+# Cut a release by pushing a tag:  git tag v0.2.0 && git push origin v0.2.0
+# (or run manually from the Actions tab). Produces:
+#   - fieldscope-<ver>.tar.gz                       install bundle (source)
+#   - fieldscope-<ver>-portable-<os>-<arch>.tar.gz  portable bundle per OS
+#   - ghcr.io/<owner>/fieldscope:<ver> + :latest    container image
+# and attaches the tarballs to a GitHub Release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.0)'
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd server && npm ci
+      - run: cd client && npm ci
+      - run: npm test
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - id: tag
+        run: echo "tag=${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}" >> "$GITHUB_OUTPUT"
+      - run: cd client && npm ci
+      - name: Build install + linux portable bundles
+        run: npm run package
+      - name: Create/refresh the GitHub Release and upload bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "Fieldscope $TAG" \
+                 --notes "Fieldscope $TAG — read-only, evidence-first OT/IT/IIoT diagnostics workbench. See README for install & portable bundle usage." --verify-tag=false
+          gh release upload "$TAG" release/*.tar.gz --clobber
+
+  portable:
+    needs: release
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: cd client && npm ci
+        shell: bash
+      - name: Build portable bundle for ${{ matrix.os }}
+        run: npm run package:portable
+        shell: bash
+      - name: Upload portable bundle to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ needs.release.outputs.tag }}" release/*-portable-*.tar.gz --clobber
+        shell: bash
+
+  image:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push image
+        run: |
+          IMG="ghcr.io/${GITHUB_REPOSITORY,,}"
+          TAG="${{ needs.release.outputs.tag }}"
+          docker build -t "$IMG:${TAG#v}" -t "$IMG:latest" .
+          docker push "$IMG:${TAG#v}"
+          docker push "$IMG:latest"

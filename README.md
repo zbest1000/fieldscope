@@ -41,6 +41,26 @@ in the UI, evidence, or rules layers changes. That plugin boundary is the point.
 **Per-driver capability reference:** [`docs/DRIVERS.md`](docs/DRIVERS.md) — what each
 driver does, its verbs, key exchange, and flagship verdict.
 
+## Install
+
+Three ways to get Fieldscope onto a machine, in order of least setup:
+
+| | What you get | Requirements | Get it |
+|---|---|---|---|
+| **Portable bundle** | Unpack-and-run — server deps (incl. the native SQLite module) baked in for your OS/arch. No install step, no network. Ideal for an **air-gapped** commissioning laptop. | Node.js ≥ 20 | `fieldscope-<ver>-portable-<os>-<arch>.tar.gz` from [Releases](../../releases) → unpack → `./fieldscope.sh` (or `fieldscope.cmd`) |
+| **Install bundle** | Small, platform-neutral source bundle; fetches production deps on first install. | Node.js ≥ 20 + npm, one-time network for `npm ci` | `fieldscope-<ver>.tar.gz` from [Releases](../../releases) → unpack → `./install.sh` → `./fieldscope.sh` |
+| **Container** | `ghcr.io/<owner>/fieldscope:<ver>` (and `:latest`). | Docker | `docker run -p 5100:5100 -v fieldscope-data:/data ghcr.io/<owner>/fieldscope:latest` |
+
+Both bundles serve the workbench on `http://localhost:5100`; evidence persists in
+`./data` next to the launcher (override with `FIELDSCOPE_DATA`, port with `PORT`).
+
+**Cut a release** by pushing a tag (`git tag v0.2.0 && git push origin v0.2.0`) —
+the [release workflow](.github/workflows/release.yml) builds the install bundle,
+a portable bundle for Linux/macOS/Windows, and the container image, and attaches
+them to a GitHub Release. To build the bundles locally: `npm run package` (writes
+`fieldscope-<ver>.tar.gz` and `fieldscope-<ver>-portable-<os>-<arch>.tar.gz` into
+`./release/`).
+
 ## Quick start (Docker)
 
 ```bash

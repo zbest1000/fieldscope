@@ -18,6 +18,12 @@ WORKDIR /build
 COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev
 
+# Full server deps (incl. devDependencies like aedes) for the sim-lab image only.
+FROM node:22-bookworm AS server-deps-all
+WORKDIR /build
+COPY server/package.json server/package-lock.json ./
+RUN npm ci
+
 FROM node:22-bookworm AS client-build
 WORKDIR /build
 COPY client/package.json client/package-lock.json ./
@@ -25,7 +31,17 @@ RUN npm ci
 COPY client/ ./
 RUN npm run build
 
-FROM node:22-bookworm-slim
+# Sim-lab image (docker compose --profile lab): every protocol simulator. Ships
+# the full dependency set so the MQTT broker sim (aedes, a devDependency) runs.
+FROM node:22-bookworm-slim AS simlab
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=server-deps-all /build/node_modules server/node_modules
+COPY server/ server/
+CMD ["node", "server/test/sim-lab.js"]
+
+# Default (last) stage: the workbench runtime — production deps only, unprivileged.
+FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PORT=5100 \
     FIELDSCOPE_DATA=/data

@@ -10,7 +10,10 @@
     "dev:client": "cd client && npm run dev",
     "build": "cd client && npm run build",
     "start": "npm run build && cd server && npm start",
-    "test": "cd server && npm test"
+    "test": "cd server && npm test",
+    "package": "bash scripts/package-release.sh",
+    "package:install": "bash scripts/package-release.sh install",
+    "package:portable": "bash scripts/package-release.sh portable"
   },
   "engines": {
     "node": ">=20.0.0"

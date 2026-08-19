@@ -56,9 +56,12 @@ jobs:
           curl -sf http://localhost:5100/api/drivers | grep -q 'modbus-tcp'
           curl -sf -o /dev/null -w '%{http_code}' http://localhost:5100/ | grep -q 200
 
-      - name: Smoke test — sim lab runs from the same image
+      - name: Build sim-lab image (full deps incl. the MQTT broker)
+        run: docker build --target simlab -t fieldscope-simlab:ci .
+
+      - name: Smoke test — sim lab starts every simulator
         run: |
-          docker run -d --name simlab fieldscope:ci node server/test/sim-lab.js
+          docker run -d --name simlab fieldscope-simlab:ci
           sleep 3
           docker logs simlab | grep -Eq '[0-9]+ simulators up'
 

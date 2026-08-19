@@ -29,9 +29,10 @@ services:
 
   simlab:
     profiles: ["lab"]
-    build: .
-    image: fieldscope:latest
-    command: ["node", "server/test/sim-lab.js"]
+    build:
+      context: .
+      target: simlab
+    image: fieldscope-simlab:latest
     restart: unless-stopped
 
 volumes:
