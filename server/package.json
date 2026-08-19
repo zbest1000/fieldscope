@@ -1,6 +1,6 @@
 {
   "name": "fieldscope-server",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Fieldscope — evidence-first OT/IT diagnostics workbench (backend)",
   "type": "module",
   "main": "index.js",

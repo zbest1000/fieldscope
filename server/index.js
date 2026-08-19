@@ -69,7 +69,7 @@ app.get('/api/health', (_req, res) =>
   res.json({
     ok: true,
     service: 'fieldscope',
-    version: '0.2.0',
+    version: '0.1.0',
     uptime_s: Math.round(process.uptime()),
     drivers: registry.list().length,
     rulepacks: rules.listPacks().length,

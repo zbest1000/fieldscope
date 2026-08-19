@@ -1,6 +1,6 @@
 name: Release
 
-# Cut a release by pushing a tag:  git tag v0.2.0 && git push origin v0.2.0
+# Cut a release by pushing a tag:  git tag v0.1.0 && git push origin v0.1.0
 # (or run manually from the Actions tab). Produces:
 #   - fieldscope-<ver>.tar.gz                       install bundle (source)
 #   - fieldscope-<ver>-portable-<os>-<arch>.tar.gz  portable bundle per OS
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.2.0)'
+        description: 'Release tag (e.g. v0.1.0)'
         required: true
 
 permissions:

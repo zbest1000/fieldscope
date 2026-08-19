@@ -54,7 +54,7 @@ Three ways to get Fieldscope onto a machine, in order of least setup:
 Both bundles serve the workbench on `http://localhost:5100`; evidence persists in
 `./data` next to the launcher (override with `FIELDSCOPE_DATA`, port with `PORT`).
 
-**Cut a release** by pushing a tag (`git tag v0.2.0 && git push origin v0.2.0`) —
+**Cut a release** by pushing a tag (`git tag v0.1.0 && git push origin v0.1.0`) —
 the [release workflow](.github/workflows/release.yml) builds the install bundle,
 a portable bundle for Linux/macOS/Windows, and the container image, and attaches
 them to a GitHub Release. To build the bundles locally: `npm run package` (writes
